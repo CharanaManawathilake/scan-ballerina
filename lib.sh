@@ -10,7 +10,7 @@
 set -euo pipefail
 
 # The scan tool version an action release pins, and the oldest Ballerina distribution it runs on.
-PINNED_TOOL_VERSION="0.12.1"
+PINNED_TOOL_VERSION="0.12.0"
 MIN_BALLERINA_VERSION="2201.13.2"
 
 # The SonarQube platform plugin of the scan tool, published to GitHub Packages, which needs a token
