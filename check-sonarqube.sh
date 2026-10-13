@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+# Step 3 (sonarqube only): resolves each package's SonarQube settings, before anything is
+# downloaded.
+#
+# Each setting is resolved field by field: the package's item under platform-config packages,
+# then the platform level of platform-config, then the package's Scan.toml and properties file.
+# Paths in platform-config are relative to the repository root, and paths in Scan.toml are
+# relative to the package.
+#
+# Inputs (environment): SCAN_WORK_DIR, PLATFORM_CONFIG, CATEGORY.
+# Writes: $SCAN_WORK_DIR/sonarqube.json, a list of {package, scan-toml, scan-toml-kind, plugin,
+# properties-file, host-url, project-key, project-name}. plugin is {kind, value}, where kind is
+# version, file, url or remote (the sonarqube entry of a remote Scan.toml, used as is). Tokens
+# are not written; scan.sh reads them from PLATFORM_CONFIG.
+
+# shellcheck source=lib.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
+cd "$(workspace_root)"
+
+ERRORS=()
+error() { ERRORS+=("$1"); }
+
+CONFIG="$(platform_config_json)" || die "$INVALID_PLATFORM_CONFIG"
+SONAR="$(jq -c '.sonarqube // {}' <<< "$CONFIG")"
+ITEMS="$(jq -c '[.packages // [] | .[] | . + {path: (.path | tostring | sub("^\\./"; "") | sub("/+$"; "") | if . == "" then "." else . end)}]' <<< "$SONAR")"
+UNITS="$(cat "$WORK/units.json")"
+
+while IFS= read -r path; do
+  jq -e --arg p "$path" 'any(.[]; .path == $p)' <<< "$UNITS" > /dev/null \
+    || error "platform-config.sonarqube.packages has the path '$path', which matches no scanned package. Give the package directory relative to the repository root."
+done < <(jq -r '.[].path' <<< "$ITEMS")
+
+# Project keys must be unique, so the platform-level project-key and project-name can apply to
+# one package only: the one package without a project-key of its own.
+WITHOUT_KEY="$(jq -r --argjson items "$ITEMS" \
+  '[.[] | .path as $p | select(($items | map(select(.path == $p)) | first // {} | ."project-key" // "") == "")] | length' \
+  <<< "$UNITS")"
+if [ "$WITHOUT_KEY" -gt 1 ] && jq -e 'has("project-key") or has("project-name")' <<< "$SONAR" > /dev/null; then
+  error "platform-config.sonarqube.project-key and project-name apply to every package without a project-key of its own, and $WITHOUT_KEY packages have none. Set project-key for each package under packages, and leave the platform-level fields out."
+fi
+
+# Resolves a plugin-path or plugin-version from platform-config. Prints {kind, value}, or a line
+# starting with "!" and the problem, since it runs in a subshell.
+config_plugin() {
+  local where="$1" path="$2" version="$3"
+  if [ -n "$version" ]; then
+    jq -nc --arg v "$version" '{kind: "version", value: $v}'
+  elif [[ "$path" =~ ^https:// ]]; then
+    jq -nc --arg v "$path" '{kind: "url", value: $v}'
+  elif is_absolute_path "$path"; then
+    echo "!$where.plugin-path is the absolute path '$path', which points to one machine. Give a path relative to the repository root, or an https URL."
+  elif [ ! -f "$(to_unix_path "$path")" ]; then
+    echo "!$where.plugin-path is '$path', which is not an existing file. Give a path relative to the repository root, or an https URL."
+  else
+    jq -nc --arg v "$(to_unix_path "$path")" '{kind: "file", value: $v}'
+  fi
+}
+
+RESOLVED='[]'
+while IFS= read -r unit; do
+  pkg="$(jq -r '.path' <<< "$unit")"
+  if [ "$(jq -r '.kind' <<< "$unit")" = "workspace" ]; then
+    error "Package '$pkg' is a workspace. bal scan reports each workspace member to the same SonarQube project, so SonarQube is not supported for workspaces yet. Give the member packages in paths and exclude the workspace with exclude-paths, or leave sonarqube out of platforms."
+    continue
+  fi
+
+  item="$(jq -c --arg p "$pkg" 'map(select(.path == $p)) | first // {}' <<< "$ITEMS")"
+  where="platform-config.sonarqube"
+  [ "$item" != "{}" ] && where="platform-config.sonarqube.packages item '$pkg'"
+  # A field from the package's item, then from the platform level.
+  pick() {
+    jq -r --arg f "$1" --argjson item "$item" '$item[$f] // .[$f] // "" | tostring' <<< "$SONAR"
+  }
+
+  # The package's Scan.toml and its sonarqube [[platform]] entry.
+  scan_toml="$(scan_toml_path "$pkg")"
+  scan_toml_kind="none"
+  entry='{}'
+  if [[ "$scan_toml" =~ ^https?:// ]]; then
+    scan_toml_kind="remote"
+  elif [ -n "$scan_toml" ]; then
+    scan_toml_kind="file"
+    if [ ! -f "$scan_toml" ]; then
+      error "Package '$pkg' points [scan] configPath in Ballerina.toml to '$scan_toml', which does not exist."
+      continue
+    fi
+  fi
+  if [ "$scan_toml_kind" != none ]; then
+    if ! platforms="$(scan_toml_platforms "$scan_toml")"; then
+      error "Package '$pkg': could not read '$scan_toml' as TOML."
+      continue
+    fi
+    entry="$(jq -c 'map(select(.name == "sonarqube")) | first // {}' <<< "$platforms")"
+  fi
+
+  # 1. Platform plugin. A plugin-path or plugin-version in the item replaces both platform-level
+  # fields.
+  plugin=""
+  if jq -e 'has("plugin-path") or has("plugin-version")' <<< "$item" > /dev/null; then
+    plugin="$(config_plugin "$where" "$(jq -r '."plugin-path" // "" | tostring' <<< "$item")" \
+      "$(jq -r '."plugin-version" // "" | tostring' <<< "$item")")"
+  elif jq -e 'has("plugin-path") or has("plugin-version")' <<< "$SONAR" > /dev/null; then
+    plugin="$(config_plugin "$where" "$(jq -r '."plugin-path" // "" | tostring' <<< "$SONAR")" \
+      "$(jq -r '."plugin-version" // "" | tostring' <<< "$SONAR")")"
+  else
+    entry_path="$(jq -r '.path // "" | tostring' <<< "$entry")"
+    if [ "$scan_toml_kind" = remote ]; then
+      # A remote Scan.toml cannot be changed, so its sonarqube entry is used as is.
+      if [ -n "$entry_path" ]; then
+        plugin='{"kind": "remote", "value": ""}'
+      else
+        error "Package '$pkg' reads a remote Scan.toml without a sonarqube [[platform]] entry. Set plugin-path or plugin-version under platform-config.sonarqube, or add the entry to the remote file."
+      fi
+    elif [ -z "$entry_path" ]; then
+      plugin="$(jq -nc --arg v "$PINNED_SONAR_PLUGIN_VERSION" '{kind: "version", value: $v}')"
+    elif [[ "$entry_path" =~ ^https:// ]]; then
+      plugin="$(jq -nc --arg v "$entry_path" '{kind: "url", value: $v}')"
+    elif [[ "$entry_path" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml' has the path '$entry_path'. Use an https URL or a path relative to the package."
+    elif is_absolute_path "$entry_path"; then
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml' has the absolute path '$entry_path', which points to one machine. Use a path relative to the package, an https URL, or set plugin-version under platform-config.sonarqube."
+    elif [ ! -f "$pkg/$(to_unix_path "$entry_path")" ]; then
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml' has the path '$entry_path', which is not an existing file relative to the package."
+    else
+      plugin="$(jq -nc --arg v "$pkg/$(to_unix_path "$entry_path")" '{kind: "file", value: $v}')"
+    fi
+  fi
+
+  # 2. Properties file.
+  properties_file=""
+  config_properties="$(pick properties-file)"
+  entry_properties="$(jq -r '.sonarProjectPropertiesPath // "" | tostring' <<< "$entry")"
+  if [ -n "$config_properties" ]; then
+    properties_file="$(to_unix_path "$config_properties")"
+    if [ ! -f "$properties_file" ]; then
+      error "$where.properties-file is '$config_properties', which does not exist. Give a path relative to the repository root."
+      continue
+    fi
+  elif [ -n "$entry_properties" ]; then
+    properties_file="$pkg/$(to_unix_path "$entry_properties")"
+    is_absolute_path "$entry_properties" && properties_file="$(to_unix_path "$entry_properties")"
+    if [ ! -f "$properties_file" ]; then
+      error "Package '$pkg': sonarProjectPropertiesPath in '$scan_toml' is '$entry_properties', which does not exist."
+      continue
+    fi
+  elif [ -f "$pkg/sonar-project.properties" ]; then
+    properties_file="$pkg/sonar-project.properties"
+  fi
+  [ -z "$properties_file" ] || properties_file="$(cd "$(dirname "$properties_file")" && pwd -P)/$(basename "$properties_file")"
+
+  # 3. Settings.
+  host_url="$(pick host-url)"
+  host_from="$where.host-url"
+  if [ -z "$host_url" ] && [ -n "$properties_file" ]; then
+    host_url="$(read_property "$properties_file" sonar.host.url)"
+    host_from="sonar.host.url in $properties_file"
+  fi
+  project_key="$(pick project-key)"
+  [ -n "$project_key" ] || [ -z "$properties_file" ] || project_key="$(read_property "$properties_file" sonar.projectKey)"
+  project_name="$(pick project-name)"
+  [ -n "$project_name" ] || [ -z "$properties_file" ] || project_name="$(read_property "$properties_file" sonar.projectName)"
+  token="$(pick token)"
+
+  # 4. Validation.
+  if [ -z "$host_url" ]; then
+    error "Package '$pkg' has no SonarQube server URL. Set host-url under platform-config.sonarqube or for the package under packages, or sonar.host.url in its sonar-project.properties."
+  elif ! [[ "$host_url" =~ ^https://[^[:space:]/]+ ]]; then
+    error "Package '$pkg' has the SonarQube server URL '$host_url' from $host_from, which is not an https URL. The token is sent to it, so only https is accepted."
+  fi
+  if [ -z "$project_key" ]; then
+    error "Package '$pkg' has no SonarQube project key. Set project-key for it under platform-config.sonarqube.packages, or sonar.projectKey in its sonar-project.properties."
+  fi
+  if [ -z "$token" ]; then
+    error "Package '$pkg' has no SonarQube token. Set token under platform-config.sonarqube or for the package under packages, from a secret such as \${{ secrets.SONAR_TOKEN }}."
+  fi
+  if [[ "$plugin" == '!'* ]]; then
+    error "${plugin#!}"
+    plugin=""
+  fi
+  [ -n "$plugin" ] || continue
+
+  RESOLVED="$(jq -c --arg pkg "$pkg" --arg toml "$scan_toml" --arg kind "$scan_toml_kind" --argjson plugin "$plugin" \
+    --arg props "$properties_file" --arg url "$host_url" --arg key "$project_key" --arg name "$project_name" \
+    '. + [{package: $pkg, "scan-toml": $toml, "scan-toml-kind": $kind, plugin: $plugin, "properties-file": $props,
+           "host-url": $url, "project-key": $key, "project-name": $name}]' <<< "$RESOLVED")"
+done < <(jq -c '.[]' <<< "$UNITS")
+
+# Each analysis would replace the previous one of the same project on the same server.
+while IFS= read -r dup; do
+  [ -n "$dup" ] && error "$dup"
+done < <(jq -r 'map(select(."project-key" != "")) | group_by([."host-url", ."project-key"])[] | select(length > 1)
+  | "Packages \(map(.package | @json) | join(", ")) resolve to the same SonarQube project key \(.[0]."project-key" | @json) on \(.[0]."host-url"), so each analysis would replace the previous one. Give each package its own project key."' <<< "$RESOLVED")
+
+if [ "${#ERRORS[@]}" -gt 0 ]; then
+  for e in "${ERRORS[@]}"; do log_error "$e"; done
+  exit 1
+fi
+
+printf '%s\n' "$RESOLVED" > "$WORK/sonarqube.json"
+jq -r '.[] | "SonarQube project for \(.package): \(."project-key") on \(."host-url")"' <<< "$RESOLVED"

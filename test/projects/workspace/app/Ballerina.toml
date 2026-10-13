@@ -1,0 +1,4 @@
+[package]
+org = "scan_test"
+name = "app"
+version = "0.1.0"

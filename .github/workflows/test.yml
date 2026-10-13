@@ -1,0 +1,277 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  hello-world:
+    name: Hello world scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan the hello world package
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/clean
+
+      - name: Check the outputs
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          [ "$PACKAGES" = 1 ] || fail "packages-scanned is '$PACKAGES', expected 1"
+          [ -f "$SARIF_FILE" ] || fail "sarif-file '$SARIF_FILE' does not exist"
+
+  # Full test suite, disabled while the hello world run is checked.
+  # lint:
+  #   name: Lint scripts
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Run shellcheck
+  #       run: shellcheck -x -S style ./*.sh
+
+  # scan:
+  #   name: Scan
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+
+  #     - name: Scan the test packages
+  #       id: scan
+  #       uses: ./
+  #       with:
+  #         ballerina-version: 2201.13.5
+  #         paths: test/projects
+  #         annotations: true
+
+  #     - name: Check the outputs and the SARIF file
+  #       shell: bash
+  #       env:
+  #         RESULT: ${{ steps.scan.outputs.result }}
+  #         SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+  #         TOTAL: ${{ steps.scan.outputs.total-count }}
+  #         HIGH: ${{ steps.scan.outputs.high-count }}
+  #         MEDIUM: ${{ steps.scan.outputs.medium-count }}
+  #         LOW: ${{ steps.scan.outputs.low-count }}
+  #         PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+  #         UPLOADS: ${{ steps.scan.outputs.uploads }}
+  #       run: |
+  #         set -euo pipefail
+  #         fail() { echo "::error::$1"; exit 1; }
+  #         [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+  #         [ "$PACKAGES" = 6 ] || fail "packages-scanned is '$PACKAGES', expected 6"
+  #         [ "$TOTAL" -gt 0 ] || fail "total-count is '$TOTAL', expected findings"
+  #         [ "$TOTAL" -eq $((HIGH + MEDIUM + LOW)) ] || fail "total-count does not add up"
+  #         [ "$UPLOADS" = '{}' ] || fail "uploads is '$UPLOADS', expected {}"
+  #         [ -f "$SARIF_FILE" ] || fail "sarif-file '$SARIF_FILE' does not exist"
+  #         jq -e '.version == "2.1.0" and (.runs | length) == 1' "$SARIF_FILE" > /dev/null \
+  #           || fail "The SARIF file must have one 2.1.0 run"
+  #         jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri]
+  #             | length > 0 and all(startswith("test/projects/"))' "$SARIF_FILE" > /dev/null \
+  #           || fail "Every URI must be relative to the repository root"
+  #         jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri] | any(test("/tests/")) | not' \
+  #           "$SARIF_FILE" > /dev/null || fail "Findings in tests/ must be dropped"
+  #         jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri]
+  #             | any(startswith("test/projects/workspace/greeter/")) and any(startswith("test/projects/multi/payments/modules/"))' \
+  #           "$SARIF_FILE" > /dev/null || fail "Findings from the workspace and from submodules must be kept"
+  #         jq -e '.runs[0].tool.driver.rules as $rules
+  #             | ($rules | map(.id) | length) == ($rules | map(.id) | unique | length)
+  #               and all(.runs[0].results[]; $rules[.ruleIndex].id == .ruleId)' "$SARIF_FILE" > /dev/null \
+  #           || fail "Rules must be unique and every ruleIndex must point to its rule"
+  #         git diff --exit-code -- test || fail "The action must not change the scanned files"
+
+  #     - name: Scan again with a gate, keeping test findings
+  #       id: gated
+  #       continue-on-error: true
+  #       uses: ./
+  #       with:
+  #         paths: test/projects/single
+  #         category: gated
+  #         exclude-tests: false
+  #         fail-on-severity: low
+  #         max-findings: 1
+
+  #     - name: Check that the gate failed
+  #       shell: bash
+  #       env:
+  #         OUTCOME: ${{ steps.gated.outcome }}
+  #         RESULT: ${{ steps.gated.outputs.result }}
+  #         LOW: ${{ steps.gated.outputs.low-count }}
+  #         SARIF_FILE: ${{ steps.gated.outputs.sarif-file }}
+  #         FIRST_SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+  #       run: |
+  #         set -euo pipefail
+  #         fail() { echo "::error::$1"; exit 1; }
+  #         [ "$OUTCOME" = failure ] || fail "The gated scan should fail, but its outcome is '$OUTCOME'"
+  #         [ "$RESULT" = failed ] || fail "result is '$RESULT', expected failed"
+  #         [ "$LOW" -ge 2 ] || fail "low-count is '$LOW', expected the test finding to be kept"
+  #         [ -f "$SARIF_FILE" ] || fail "The SARIF file must be written even when the gate fails"
+  #         [ "$SARIF_FILE" != "$FIRST_SARIF_FILE" ] || fail "Each run must have its own SARIF file"
+
+  #     - name: Scan with exclude-paths and include-rules
+  #       id: filtered
+  #       uses: ./
+  #       with:
+  #         paths: |
+  #           test/projects/multi
+  #           test/projects/single
+  #         exclude-paths: test/projects/single, **/modules/**
+  #         include-rules: ballerina:1
+  #         category: filtered
+
+  #     - name: Check the filters
+  #       shell: bash
+  #       env:
+  #         SARIF_FILE: ${{ steps.filtered.outputs.sarif-file }}
+  #         PACKAGES: ${{ steps.filtered.outputs.packages-scanned }}
+  #       run: |
+  #         set -euo pipefail
+  #         fail() { echo "::error::$1"; exit 1; }
+  #         [ "$PACKAGES" = 2 ] || fail "packages-scanned is '$PACKAGES', expected 2"
+  #         jq -e '[.runs[0].results[] | .ruleId] | length > 0 and all(. == "ballerina:1")' "$SARIF_FILE" > /dev/null \
+  #           || fail "Only ballerina:1 findings must be reported"
+  #         jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri] | all(test("/modules/") | not)' \
+  #           "$SARIF_FILE" > /dev/null || fail "Findings in excluded paths must be dropped"
+
+  # edge-cases:
+  #   name: Edge cases
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+
+  #     - name: No package found
+  #       id: empty
+  #       uses: ./
+  #       with:
+  #         paths: test/projects/single/tests
+
+  #     - name: Invalid inputs
+  #       id: invalid
+  #       continue-on-error: true
+  #       uses: ./
+  #       with:
+  #         platforms: gitlab
+  #         fail-on-severity: critical
+  #         platform-config: |
+  #           sonarqube:
+  #             tokn: not-a-secret
+
+  #     - name: SonarQube URL that is not https
+  #       id: insecure
+  #       continue-on-error: true
+  #       uses: ./
+  #       with:
+  #         paths: test/projects/single
+  #         platforms: sonarqube
+  #         platform-config: |
+  #           sonarqube:
+  #             host-url: http://sonarqube.example.com
+  #             token: not-a-secret
+  #             project-key: single
+
+  #     - name: SonarQube package on another server without its own token
+  #       id: foreign-token
+  #       continue-on-error: true
+  #       uses: ./
+  #       with:
+  #         paths: test/projects/multi
+  #         platforms: sonarqube
+  #         platform-config: |
+  #           sonarqube:
+  #             host-url: https://sonarqube.example.com
+  #             token: not-a-secret
+  #             packages:
+  #               - path: test/projects/multi/orders
+  #                 project-key: orders
+  #               - path: test/projects/multi/payments
+  #                 host-url: https://other.example.com
+  #                 project-key: payments
+
+  #     - name: SonarQube settings that match no package
+  #       id: unmatched
+  #       continue-on-error: true
+  #       uses: ./
+  #       with:
+  #         paths: test/projects/multi
+  #         platforms: sonarqube
+  #         platform-config: |
+  #           sonarqube:
+  #             host-url: https://sonarqube.example.com
+  #             token: not-a-secret
+  #             project-key: shared
+  #             packages:
+  #               - path: test/projects/missing
+  #                 project-key: missing
+
+  #     - name: Check the results
+  #       shell: bash
+  #       env:
+  #         EMPTY_RESULT: ${{ steps.empty.outputs.result }}
+  #         EMPTY_SARIF: ${{ steps.empty.outputs.sarif-file }}
+  #         INVALID_OUTCOME: ${{ steps.invalid.outcome }}
+  #         INVALID_RESULT: ${{ steps.invalid.outputs.result }}
+  #         INSECURE_OUTCOME: ${{ steps.insecure.outcome }}
+  #         INSECURE_RESULT: ${{ steps.insecure.outputs.result }}
+  #         FOREIGN_TOKEN_OUTCOME: ${{ steps.foreign-token.outcome }}
+  #         FOREIGN_TOKEN_RESULT: ${{ steps.foreign-token.outputs.result }}
+  #         UNMATCHED_OUTCOME: ${{ steps.unmatched.outcome }}
+  #         UNMATCHED_RESULT: ${{ steps.unmatched.outputs.result }}
+  #       run: |
+  #         set -euo pipefail
+  #         fail() { echo "::error::$1"; exit 1; }
+  #         [ "$EMPTY_RESULT" = skipped ] || fail "No package: result is '$EMPTY_RESULT', expected skipped"
+  #         [ -z "$EMPTY_SARIF" ] || fail "No package: sarif-file must be empty"
+  #         [ "$INVALID_OUTCOME" = failure ] || fail "Invalid inputs: the step should fail"
+  #         [ "$INVALID_RESULT" = error ] || fail "Invalid inputs: result is '$INVALID_RESULT', expected error"
+  #         [ "$INSECURE_OUTCOME" = failure ] || fail "http SonarQube URL: the step should fail"
+  #         [ "$INSECURE_RESULT" = error ] || fail "http SonarQube URL: result is '$INSECURE_RESULT', expected error"
+  #         [ "$FOREIGN_TOKEN_OUTCOME" = failure ] || fail "host-url without token: the step should fail"
+  #         [ "$FOREIGN_TOKEN_RESULT" = error ] || fail "host-url without token: result is '$FOREIGN_TOKEN_RESULT', expected error"
+  #         [ "$UNMATCHED_OUTCOME" = failure ] || fail "Unmatched SonarQube settings: the step should fail"
+  #         [ "$UNMATCHED_RESULT" = error ] || fail "Unmatched SonarQube settings: result is '$UNMATCHED_RESULT', expected error"
+  #         [ ! -d "$RUNNER_TEMP/scan-ballerina-tools" ] || fail "Invalid SonarQube settings must fail before anything is downloaded"
+
+  # code-scanning:
+  #   name: Upload to GitHub code scanning
+  #   # Pull requests from forks get a read-only token.
+  #   if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     contents: read
+  #     security-events: write
+  #     actions: read
+  #   steps:
+  #     - uses: actions/checkout@v4
+
+  #     - name: Scan and upload
+  #       id: scan
+  #       uses: ./
+  #       with:
+  #         paths: test/projects
+  #         platforms: github-code-scanning
+  #         category: bal-scan-test
+
+  #     - name: Check the upload
+  #       shell: bash
+  #       env:
+  #         UPLOADS: ${{ steps.scan.outputs.uploads }}
+  #       run: |
+  #         set -euo pipefail
+  #         jq -e '."github-code-scanning"."sarif-id" | type == "string" and length > 0' <<< "$UPLOADS" > /dev/null \
+  #           || { echo "::error::uploads has no sarif-id: $UPLOADS"; exit 1; }
