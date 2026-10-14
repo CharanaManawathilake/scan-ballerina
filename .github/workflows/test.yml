@@ -14,6 +14,10 @@ jobs:
   scan:
     name: Scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
 
@@ -22,4 +26,4 @@ jobs:
         with:
           ballerina-version: 2201.13.5
           paths: test
-          job-summary: false
+          platforms: github-code-scanning
