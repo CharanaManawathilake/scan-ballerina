@@ -356,14 +356,10 @@ jobs:
           [ "$OVER_OUTCOME" = failure ] || fail "over-limit: more findings than max-findings must fail"
           [ "$OVER_RESULT" = failed ] || fail "over-limit: result is '$OVER_RESULT', expected failed"
 
+  # The annotation-checks job checks the annotations of this job, which finds it by its name.
   annotations:
-    # The check below finds this job by its name.
     name: Annotations
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-      checks: read
     steps:
       - uses: actions/checkout@v4
 
@@ -376,7 +372,7 @@ jobs:
           category: annotated
           annotations: true
 
-      # A control, so that the check below also shows annotations=false adds none.
+      # A control, so that the check also shows annotations=false adds none.
       - name: Scan without annotations
         id: plain
         uses: ./
@@ -384,22 +380,6 @@ jobs:
           paths: test/projects/multi/payments
           category: plain
           annotations: false
-
-      - name: Check the annotations
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          fail() { echo "::error::$1"; exit 1; }
-          ANNOTATIONS="$(bash .github/scripts/annotations.sh Annotations \
-            'any(.[]; .path == "test/projects/multi/orders/main.bal")')"
-          jq . <<< "$ANNOTATIONS"
-          jq -e 'any(.path == "test/projects/multi/orders/main.bal" and .title == "ballerina:1"
-              and .annotation_level == "notice" and .start_line == 5)' <<< "$ANNOTATIONS" > /dev/null \
-            || fail "annotations=true must annotate the ballerina:1 finding in test/projects/multi/orders/main.bal"
-          jq -e 'any(.path | startswith("test/projects/multi/payments/")) | not' <<< "$ANNOTATIONS" > /dev/null \
-            || fail "annotations=false must not annotate findings"
 
   job-summary:
     name: Job summary turned off
@@ -441,14 +421,11 @@ jobs:
   # when SonarScanner cannot reach it. They check what the action resolved and downloaded, and that
   # the platform plugin ran SonarScanner against the server.
 
+  # The annotation-checks job checks the error each step of this job reported, and finds it by its
+  # name. Each step's ID is also its category, which titles its errors.
   sonarqube-invalid-settings:
-    # The check below finds this job by its name.
     name: SonarQube settings that fail
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: read
-      checks: read
     steps:
       - uses: actions/checkout@v4
 
@@ -574,44 +551,22 @@ jobs:
                 - path: test/projects/missing
                   project-key: missing
 
-      - name: Check that each step failed for its reason
+      - name: Check that each step failed
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           STEPS: ${{ toJSON(steps) }}
-          # The error each step must report, by step ID, which is also its category.
-          EXPECTED: |
-            {
-              "absolute-plugin": "has the absolute path '/opt/sonar/sonar-platform-plugin.jar'",
-              "http-plugin": "has the path 'http://localhost:8443/sonar-platform-plugin.jar'. Use an https URL",
-              "no-token": "Package 'test/projects/multi/orders' has no SonarQube token",
-              "empty-token": "platform-config.sonarqube has an empty token",
-              "duplicate-keys": "resolve to the same SonarQube project key \"shared-key\"",
-              "shared-project-key": "apply to every package without a project-key of its own, and 2 packages have none",
-              "http-host": "platform-config.sonarqube.host-url must be an https URL",
-              "unmatched-package": "has the path 'test/projects/missing', which matches no scanned package"
-            }
         run: |
           set -euo pipefail
           FAILURES=0
           fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
-          ANNOTATIONS="$(bash .github/scripts/annotations.sh 'SonarQube settings that fail' \
-            '. as $a | env.EXPECTED | fromjson | to_entries | all(.key as $c | .value as $m
-              | any($a[]; .title == "bal scan (\($c))" and (.message | contains($m))))')"
-          jq . <<< "$ANNOTATIONS"
-          while IFS=$'\t' read -r id message; do
-            outcome="$(jq -r --arg id "$id" '.[$id].outcome // "missing"' <<< "$STEPS")"
-            result="$(jq -r --arg id "$id" '.[$id].outputs.result // ""' <<< "$STEPS")"
+          while IFS=$'\t' read -r id outcome result; do
             if [ "$outcome" = skipped ]; then
               echo "$id: skipped"
               continue
             fi
             [ "$outcome" = failure ] || fail "$id: the step should fail, but its outcome is '$outcome'"
             [ "$result" = error ] || fail "$id: result is '$result', expected error"
-            jq -e --arg c "bal scan ($id)" --arg m "$message" \
-              'any(.[]; .title == $c and .annotation_level == "failure" and (.message | contains($m)))' \
-              <<< "$ANNOTATIONS" > /dev/null || fail "$id: no error containing: $message"
-          done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$EXPECTED")
+          done < <(jq -r 'to_entries[] | [.key, .value.outcome, .value.outputs.result // ""] | @tsv' <<< "$STEPS")
           [ ! -d "$RUNNER_TEMP/scan-ballerina-tools" ] || fail "Invalid SonarQube settings must fail before anything is downloaded"
           [ "$FAILURES" -eq 0 ] || exit 1
 
@@ -831,3 +786,67 @@ jobs:
           [ "$OVERRIDE_OUTCOME" = failure ] && [ "$OVERRIDE_RESULT" = error ] \
             || fail "override: expected the step to fail with result error, got '$OVERRIDE_OUTCOME' and '$OVERRIDE_RESULT'"
           [ -z "$(git status --porcelain -- test)" ] || fail "The scan must not change the package: $(git status --porcelain -- test)"
+
+  # Annotations reach the check run only after the job that wrote them has finished, so they are
+  # checked from this job.
+  annotation-checks:
+    name: Check the annotations
+    needs: [annotations, sonarqube-invalid-settings]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the annotations of the Annotations job
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          ANNOTATIONS="$(bash .github/scripts/annotations.sh Annotations)"
+          jq . <<< "$ANNOTATIONS"
+          jq -e 'any(.path == "test/projects/multi/orders/main.bal" and .title == "ballerina:1"
+              and .annotation_level == "notice" and .start_line == 5)' <<< "$ANNOTATIONS" > /dev/null \
+            || fail "annotations=true must annotate the ballerina:1 finding in test/projects/multi/orders/main.bal"
+          jq -e 'any(.path | startswith("test/projects/multi/payments/")) | not' <<< "$ANNOTATIONS" > /dev/null \
+            || fail "annotations=false must not annotate findings"
+
+      - name: Check the errors of the invalid SonarQube settings
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Pull requests from forks get no secrets, so there the token steps are skipped.
+          FORK_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+          # The error each step must report, by step ID, which is also its category.
+          EXPECTED: |
+            {
+              "absolute-plugin": "has the absolute path '/opt/sonar/sonar-platform-plugin.jar'",
+              "http-plugin": "has the path 'http://localhost:8443/sonar-platform-plugin.jar'. Use an https URL",
+              "no-token": "Package 'test/projects/multi/orders' has no SonarQube token",
+              "empty-token": "platform-config.sonarqube has an empty token",
+              "duplicate-keys": "resolve to the same SonarQube project key \"shared-key\"",
+              "shared-project-key": "apply to every package without a project-key of its own, and 2 packages have none",
+              "http-host": "platform-config.sonarqube.host-url must be an https URL",
+              "unmatched-package": "has the path 'test/projects/missing', which matches no scanned package"
+            }
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+          ANNOTATIONS="$(bash .github/scripts/annotations.sh 'SonarQube settings that fail')"
+          jq . <<< "$ANNOTATIONS"
+          while IFS=$'\t' read -r id message; do
+            if [ "$FORK_PR" = true ] && { [ "$id" = no-token ] || [ "$id" = empty-token ]; }; then
+              echo "$id: skipped"
+              continue
+            fi
+            jq -e --arg c "bal scan ($id)" --arg m "$message" \
+              'any(.[]; .title == $c and .annotation_level == "failure" and (.message | contains($m)))' \
+              <<< "$ANNOTATIONS" > /dev/null || fail "$id: no error containing: $message"
+          done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$EXPECTED")
+          [ "$FAILURES" -eq 0 ] || exit 1
