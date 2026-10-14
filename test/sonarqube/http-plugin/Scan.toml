@@ -1,0 +1,3 @@
+[[platform]]
+name = "sonarqube"
+path = "http://localhost:8443/sonar-platform-plugin.jar"

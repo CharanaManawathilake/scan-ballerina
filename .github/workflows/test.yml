@@ -10,9 +10,82 @@ on:
 permissions:
   contents: read
 
+# Test packages, with the findings bal scan reports for each:
+#   test/projects/single                    6 low
+#   test/projects/multi/orders              1 low
+#   test/projects/multi/payments            2 low
+#   test/projects/services/api              1 low
+#   test/projects/services/internal/legacy  2 low
+#   test/projects/secrets                   1 medium
+# The packages in test/sonarqube each set up one SonarQube case, with a Scan.toml or a
+# sonar-project.properties file.
+
 jobs:
-  scan:
-    name: Scan
+  compatible-versions:
+    name: Compatible Ballerina and scan tool versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          tool-version: 0.12.0
+          paths: test/projects/single
+
+      - name: Check the result
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          TOTAL: ${{ steps.scan.outputs.total-count }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          [ "$PACKAGES" = 1 ] || fail "packages-scanned is '$PACKAGES', expected 1"
+          [ "$TOTAL" -gt 0 ] || fail "total-count is '$TOTAL', expected findings"
+          [ -f "$SARIF_FILE" ] || fail "sarif-file '$SARIF_FILE' does not exist"
+          bal version | grep -q '^Ballerina 2201\.13\.5 ' || fail "Ballerina 2201.13.5 is not the installed version"
+          bal tool list | grep -Eq '^\|scan +\|0\.12\.0 ' || fail "bal scan 0.12.0 is not the active tool version"
+
+  incompatible-versions:
+    name: Scan tool version incompatible with Ballerina
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # bal scan 0.12.0 needs Ballerina 2201.13 or later.
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.12.0
+          tool-version: 0.12.0
+          paths: test/projects/single
+
+      - name: Check that the step failed
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$OUTCOME" = failure ] || fail "The step should fail, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+          [ -z "$SARIF_FILE" ] || fail "sarif-file must be empty, got '$SARIF_FILE'"
+          bal version | grep -q '^Ballerina 2201\.12\.0 ' || fail "Ballerina 2201.12.0 is not the installed version"
+
+  code-scanning:
+    name: Upload to GitHub code scanning
+    # Pull requests from forks get a read-only token.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -21,10 +94,740 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run bal scan
+      - name: Scan and upload
+        id: scan
         uses: ./
         with:
-          category: category-test
           ballerina-version: 2201.13.5
-          paths: test
+          paths: test/projects/single
           platforms: github-code-scanning
+          category: bal-scan-test
+
+      - name: Check the upload
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+          UPLOADS: ${{ steps.scan.outputs.uploads }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          jq -e '."github-code-scanning"."sarif-id" | type == "string" and length > 0' <<< "$UPLOADS" > /dev/null \
+            || fail "uploads has no sarif-id: $UPLOADS"
+
+  single-path:
+    name: One path with several packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi
+
+      - name: Check that only the given path was scanned
+        shell: bash
+        env:
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$PACKAGES" = 2 ] || fail "packages-scanned is '$PACKAGES', expected 2"
+          URIS="$(jq -c '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri]' "$SARIF_FILE")"
+          jq -e 'length > 0 and all(startswith("test/projects/multi/"))' <<< "$URIS" > /dev/null \
+            || fail "Every finding must be under test/projects/multi: $URIS"
+          jq -e 'any(startswith("test/projects/multi/orders/")) and any(startswith("test/projects/multi/payments/"))' \
+            <<< "$URIS" > /dev/null || fail "Both packages under test/projects/multi must be scanned: $URIS"
+
+  exclude-paths:
+    name: Several paths with a package excluded
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: |
+            test/projects/multi
+            test/projects/services
+          exclude-paths: test/projects/services/internal/legacy
+
+      - name: Check that the excluded package was not scanned
+        shell: bash
+        env:
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$PACKAGES" = 3 ] || fail "packages-scanned is '$PACKAGES', expected 3"
+          URIS="$(jq -c '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri]' "$SARIF_FILE")"
+          jq -e 'any(startswith("test/projects/services/internal/")) | not' <<< "$URIS" > /dev/null \
+            || fail "Findings in the excluded package must be dropped: $URIS"
+          jq -e 'any(startswith("test/projects/multi/orders/")) and any(startswith("test/projects/multi/payments/"))
+              and any(startswith("test/projects/services/api/"))' <<< "$URIS" > /dev/null \
+            || fail "The packages that are not excluded must be scanned: $URIS"
+
+  categories:
+    name: Two categories in one job
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan orders
+        id: orders
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi/orders
+          category: orders
+
+      - name: Scan payments
+        id: payments
+        uses: ./
+        with:
+          paths: test/projects/multi/payments
+          category: payments
+
+      - name: Check that each category has its own results
+        shell: bash
+        env:
+          ORDERS_RESULT: ${{ steps.orders.outputs.result }}
+          ORDERS_SARIF: ${{ steps.orders.outputs.sarif-file }}
+          ORDERS_TOTAL: ${{ steps.orders.outputs.total-count }}
+          PAYMENTS_RESULT: ${{ steps.payments.outputs.result }}
+          PAYMENTS_SARIF: ${{ steps.payments.outputs.sarif-file }}
+          PAYMENTS_TOTAL: ${{ steps.payments.outputs.total-count }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$ORDERS_RESULT" = passed ] || fail "orders: result is '$ORDERS_RESULT', expected passed"
+          [ "$PAYMENTS_RESULT" = passed ] || fail "payments: result is '$PAYMENTS_RESULT', expected passed"
+          [ "$(basename "$ORDERS_SARIF")" = orders.sarif ] || fail "orders: sarif-file is '$ORDERS_SARIF'"
+          [ "$(basename "$PAYMENTS_SARIF")" = payments.sarif ] || fail "payments: sarif-file is '$PAYMENTS_SARIF'"
+          [ "$(dirname "$ORDERS_SARIF")" != "$(dirname "$PAYMENTS_SARIF")" ] || fail "Each category must have its own work directory"
+          [ -f "$ORDERS_SARIF" ] || fail "The orders SARIF file must still exist after the payments scan"
+          [ "$ORDERS_TOTAL" = 1 ] || fail "orders: total-count is '$ORDERS_TOTAL', expected 1"
+          [ "$PAYMENTS_TOTAL" = 2 ] || fail "payments: total-count is '$PAYMENTS_TOTAL', expected 2"
+          jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri] | all(startswith("test/projects/multi/orders/"))' \
+            "$ORDERS_SARIF" > /dev/null || fail "orders: the SARIF file has findings from other packages"
+          jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri] | all(startswith("test/projects/multi/payments/"))' \
+            "$PAYMENTS_SARIF" > /dev/null || fail "payments: the SARIF file has findings from other packages"
+
+  fail-on-severity:
+    name: Fail on medium severity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan a package with low findings only
+        id: low
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/single
+          category: low-only
+          fail-on-severity: medium
+
+      - name: Scan a package with a medium finding
+        id: medium
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/secrets
+          category: medium
+          fail-on-severity: medium
+
+      - name: Check the gate
+        shell: bash
+        env:
+          LOW_OUTCOME: ${{ steps.low.outcome }}
+          LOW_RESULT: ${{ steps.low.outputs.result }}
+          LOW_LOW: ${{ steps.low.outputs.low-count }}
+          LOW_MEDIUM: ${{ steps.low.outputs.medium-count }}
+          LOW_HIGH: ${{ steps.low.outputs.high-count }}
+          MEDIUM_OUTCOME: ${{ steps.medium.outcome }}
+          MEDIUM_RESULT: ${{ steps.medium.outputs.result }}
+          MEDIUM_MEDIUM: ${{ steps.medium.outputs.medium-count }}
+          MEDIUM_SARIF: ${{ steps.medium.outputs.sarif-file }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$LOW_LOW" -gt 0 ] && [ "$LOW_MEDIUM" = 0 ] && [ "$LOW_HIGH" = 0 ] \
+            || fail "low-only: expected only low findings, got $LOW_HIGH high, $LOW_MEDIUM medium, $LOW_LOW low"
+          [ "$LOW_OUTCOME" = success ] || fail "low-only: low findings must not fail a medium gate"
+          [ "$LOW_RESULT" = passed ] || fail "low-only: result is '$LOW_RESULT', expected passed"
+          [ "$MEDIUM_MEDIUM" = 1 ] || fail "medium: medium-count is '$MEDIUM_MEDIUM', expected 1"
+          [ "$MEDIUM_OUTCOME" = failure ] || fail "medium: a medium finding must fail a medium gate"
+          [ "$MEDIUM_RESULT" = failed ] || fail "medium: result is '$MEDIUM_RESULT', expected failed"
+          [ -f "$MEDIUM_SARIF" ] || fail "medium: the SARIF file must be written even when the gate fails"
+
+  max-findings:
+    name: Max findings without a severity gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The gate is off, so max-findings has no effect even though there are more findings.
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/single
+          max-findings: 1
+
+      - name: Check that the step passed
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          TOTAL: ${{ steps.scan.outputs.total-count }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$TOTAL" -gt 1 ] || fail "total-count is '$TOTAL', expected more than max-findings"
+          [ "$OUTCOME" = success ] || fail "The step should pass, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+
+  severity-and-max-findings:
+    name: Fail on severity with max findings
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Count the findings
+        id: baseline
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/single
+          category: baseline
+
+      - name: Work out the limits
+        id: limits
+        shell: bash
+        env:
+          TOTAL: ${{ steps.baseline.outputs.total-count }}
+        run: |
+          set -euo pipefail
+          [ "$TOTAL" -gt 0 ] || { echo "::error::total-count is '$TOTAL', expected findings"; exit 1; }
+          echo "at=$TOTAL" >> "$GITHUB_OUTPUT"
+          echo "below=$((TOTAL - 1))" >> "$GITHUB_OUTPUT"
+
+      - name: Scan with max-findings equal to the findings
+        id: at-limit
+        uses: ./
+        with:
+          paths: test/projects/single
+          category: at-limit
+          fail-on-severity: low
+          max-findings: ${{ steps.limits.outputs.at }}
+
+      - name: Scan with max-findings one below the findings
+        id: over-limit
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/single
+          category: over-limit
+          fail-on-severity: low
+          max-findings: ${{ steps.limits.outputs.below }}
+
+      - name: Check the gate
+        shell: bash
+        env:
+          AT_OUTCOME: ${{ steps.at-limit.outcome }}
+          AT_RESULT: ${{ steps.at-limit.outputs.result }}
+          OVER_OUTCOME: ${{ steps.over-limit.outcome }}
+          OVER_RESULT: ${{ steps.over-limit.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$AT_OUTCOME" = success ] || fail "at-limit: findings up to max-findings must pass"
+          [ "$AT_RESULT" = passed ] || fail "at-limit: result is '$AT_RESULT', expected passed"
+          [ "$OVER_OUTCOME" = failure ] || fail "over-limit: more findings than max-findings must fail"
+          [ "$OVER_RESULT" = failed ] || fail "over-limit: result is '$OVER_RESULT', expected failed"
+
+  annotations:
+    # The check below finds this job by its name.
+    name: Annotations
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan with annotations
+        id: annotated
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi/orders
+          category: annotated
+          annotations: true
+
+      # A control, so that the check below also shows annotations=false adds none.
+      - name: Scan without annotations
+        id: plain
+        uses: ./
+        with:
+          paths: test/projects/multi/payments
+          category: plain
+          annotations: false
+
+      - name: Check the annotations
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          ANNOTATIONS="$(bash .github/scripts/annotations.sh Annotations \
+            'any(.[]; .path == "test/projects/multi/orders/main.bal")')"
+          jq . <<< "$ANNOTATIONS"
+          jq -e 'any(.path == "test/projects/multi/orders/main.bal" and .title == "ballerina:1"
+              and .annotation_level == "notice" and .start_line == 5)' <<< "$ANNOTATIONS" > /dev/null \
+            || fail "annotations=true must annotate the ballerina:1 finding in test/projects/multi/orders/main.bal"
+          jq -e 'any(.path | startswith("test/projects/multi/payments/")) | not' <<< "$ANNOTATIONS" > /dev/null \
+            || fail "annotations=false must not annotate findings"
+
+  job-summary:
+    name: Job summary turned off
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A control, so that the check below also shows that the summary files can be read.
+      - name: Scan with a job summary
+        id: with-summary
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi/orders
+          category: with-summary
+
+      - name: Scan without a job summary
+        id: without-summary
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: without-summary
+          job-summary: false
+
+      # Each step writes its summary to a file in the runner's file command directory.
+      - name: Check the job summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          DIR="$RUNNER_TEMP/_runner_file_commands"
+          grep -rqF '### ✅ bal scan: with-summary' "$DIR" \
+            || fail "job-summary=true must write the summary (no summary found in $DIR)"
+          if grep -rqF 'bal scan: without-summary' "$DIR"; then
+            fail "job-summary=false must not write the summary"
+          fi
+
+  # The SonarQube tests report to a dummy server, so each scan that gets past the settings fails
+  # when SonarScanner cannot reach it. They check what the action resolved and downloaded, and that
+  # the platform plugin ran SonarScanner against the server.
+
+  sonarqube-invalid-settings:
+    # The check below finds this job by its name.
+    name: SonarQube settings that fail
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Absolute plugin path in Scan.toml
+        id: absolute-plugin
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/sonarqube/absolute-plugin
+          category: absolute-plugin
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: absolute-plugin
+
+      - name: http plugin URL in Scan.toml
+        id: http-plugin
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/sonarqube/http-plugin
+          category: http-plugin
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: http-plugin
+
+      # Pull requests from forks get no secrets, so there the action skips SonarQube instead.
+      - name: No token
+        id: no-token
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: no-token
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              project-key: orders
+
+      # A secret that is not set resolves to an empty value.
+      - name: Empty token
+        id: empty-token
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: empty-token
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: ${{ secrets.UNSET_SONAR_TOKEN }}
+              project-key: orders
+
+      - name: Two packages with the same project key
+        id: duplicate-keys
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi
+          category: duplicate-keys
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              packages:
+                - path: test/projects/multi/orders
+                  project-key: shared-key
+                - path: test/projects/multi/payments
+                  project-key: shared-key
+
+      - name: Platform-level project key for two packages
+        id: shared-project-key
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi
+          category: shared-project-key
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: shared-key
+
+      - name: http server URL
+        id: http-host
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: http-host
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: http://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+
+      - name: Package settings that match no package
+        id: unmatched-package
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: unmatched-package
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+              packages:
+                - path: test/projects/missing
+                  project-key: missing
+
+      - name: Check that each step failed for its reason
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STEPS: ${{ toJSON(steps) }}
+          # The error each step must report, by step ID, which is also its category.
+          EXPECTED: |
+            {
+              "absolute-plugin": "has the absolute path '/opt/sonar/sonar-platform-plugin.jar'",
+              "http-plugin": "has the path 'http://localhost:8443/sonar-platform-plugin.jar'. Use an https URL",
+              "no-token": "Package 'test/projects/multi/orders' has no SonarQube token",
+              "empty-token": "platform-config.sonarqube has an empty token",
+              "duplicate-keys": "resolve to the same SonarQube project key \"shared-key\"",
+              "shared-project-key": "apply to every package without a project-key of its own, and 2 packages have none",
+              "http-host": "platform-config.sonarqube.host-url must be an https URL",
+              "unmatched-package": "has the path 'test/projects/missing', which matches no scanned package"
+            }
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+          ANNOTATIONS="$(bash .github/scripts/annotations.sh 'SonarQube settings that fail' \
+            '. as $a | env.EXPECTED | fromjson | to_entries | all(.key as $c | .value as $m
+              | any($a[]; .title == "bal scan (\($c))" and (.message | contains($m))))')"
+          jq . <<< "$ANNOTATIONS"
+          while IFS=$'\t' read -r id message; do
+            outcome="$(jq -r --arg id "$id" '.[$id].outcome // "missing"' <<< "$STEPS")"
+            result="$(jq -r --arg id "$id" '.[$id].outputs.result // ""' <<< "$STEPS")"
+            if [ "$outcome" = skipped ]; then
+              echo "$id: skipped"
+              continue
+            fi
+            [ "$outcome" = failure ] || fail "$id: the step should fail, but its outcome is '$outcome'"
+            [ "$result" = error ] || fail "$id: result is '$result', expected error"
+            jq -e --arg c "bal scan ($id)" --arg m "$message" \
+              'any(.[]; .title == $c and .annotation_level == "failure" and (.message | contains($m)))' \
+              <<< "$ANNOTATIONS" > /dev/null || fail "$id: no error containing: $message"
+          done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$EXPECTED")
+          [ ! -d "$RUNNER_TEMP/scan-ballerina-tools" ] || fail "Invalid SonarQube settings must fail before anything is downloaded"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  sonarqube-remote-plugin:
+    name: SonarQube plugin from an https URL in Scan.toml
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # Serves the platform plugin at the URL in test/sonarqube/remote-plugin/Scan.toml, with a
+      # self-signed certificate that the runner trusts.
+      - name: Serve the plugin over https
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/plugin-server"
+          mkdir -p "$DIR/www"
+          cd "$DIR"
+          curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -o www/sonar-platform-plugin.jar \
+            https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/0.3.0/sonar-platform-plugin-0.3.0.jar
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
+            -addext subjectAltName=DNS:localhost -keyout key.pem -out cert.pem
+          sudo cp cert.pem /usr/local/share/ca-certificates/plugin-server.crt
+          sudo update-ca-certificates
+          cat > server.py << 'PY'
+          import functools, http.server, ssl
+          handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory="www")
+          server = http.server.HTTPServer(("localhost", 8443), handler)
+          context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+          context.load_cert_chain("cert.pem", "key.pem")
+          server.socket = context.wrap_socket(server.socket, server_side=True)
+          server.serve_forever()
+          PY
+          nohup python3 server.py > server.log 2>&1 &
+          for _ in $(seq 1 10); do
+            curl -fsS -o /dev/null https://localhost:8443/sonar-platform-plugin.jar && exit 0
+            sleep 1
+          done
+          cat server.log
+          echo "::error::The plugin server did not start"
+          exit 1
+
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/sonarqube/remote-plugin
+          category: remote-plugin
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: remote-plugin
+
+      - name: Check that the plugin came from the URL
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-remote-plugin-*)"
+          SERVED="$RUNNER_TEMP/plugin-server/www/sonar-platform-plugin.jar"
+          jq . "$WORK/sonarqube.json"
+          jq -e '.[0].plugin == {kind: "url", value: "https://localhost:8443/sonar-platform-plugin.jar"}' \
+            "$WORK/sonarqube.json" > /dev/null || fail "The plugin must resolve to the URL in Scan.toml"
+          PLUGIN_FILE="$(jq -r '.[0]."plugin-file"' "$WORK/sonarqube.json")"
+          [ -f "$PLUGIN_FILE" ] || fail "The plugin was not downloaded to '$PLUGIN_FILE'"
+          [ "$(sha256sum < "$PLUGIN_FILE")" = "$(sha256sum < "$SERVED")" ] || fail "The downloaded plugin differs from the served one"
+          # One request is the start-up check of the server above.
+          [ "$(grep -c 'GET /sonar-platform-plugin.jar ' "$RUNNER_TEMP/plugin-server/server.log")" -ge 2 ] \
+            || fail "The action did not request the plugin from the URL"
+          [ ! -e "$RUNNER_TEMP/scan-ballerina-tools/sonar-platform-plugin-0.3.0.jar" ] \
+            || fail "The pinned plugin version must not be downloaded when Scan.toml gives a URL"
+          grep -q 'SonarScanner CLI' "$WORK/logs/sonarqube-0.log" || fail "The plugin did not run SonarScanner"
+          grep -qF 'https://sonarqube.example.invalid/' "$WORK/logs/sonarqube-0.log" \
+            || fail "SonarScanner did not report to the configured server"
+          [ "$OUTCOME" = failure ] || fail "The step should fail, since the server does not exist, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+          [ -z "$(git status --porcelain -- test)" ] || fail "Scan.toml must be restored after the scan: $(git status --porcelain -- test)"
+
+  sonarqube-plugin-version:
+    name: SonarQube plugin version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # 0.2.0 rather than the pinned 0.3.0, so the check shows the requested version was used.
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi/orders
+          category: plugin-version
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              plugin-version: 0.2.0
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+
+      - name: Check that the requested version was used
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-plugin-version-*)"
+          CACHE="$RUNNER_TEMP/scan-ballerina-tools"
+          jq . "$WORK/sonarqube.json"
+          jq -e '.[0].plugin == {kind: "version", value: "0.2.0"}' "$WORK/sonarqube.json" > /dev/null \
+            || fail "The plugin must resolve to version 0.2.0"
+          PLUGIN_FILE="$(jq -r '.[0]."plugin-file"' "$WORK/sonarqube.json")"
+          [ "$PLUGIN_FILE" = "$CACHE/sonar-platform-plugin-0.2.0.jar" ] || fail "plugin-file is '$PLUGIN_FILE'"
+          [ -f "$PLUGIN_FILE" ] || fail "The plugin was not downloaded"
+          curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -o "$RUNNER_TEMP/expected.jar" \
+            https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/0.2.0/sonar-platform-plugin-0.2.0.jar
+          [ "$(sha256sum < "$PLUGIN_FILE")" = "$(sha256sum < "$RUNNER_TEMP/expected.jar")" ] \
+            || fail "The downloaded plugin is not version 0.2.0"
+          [ ! -e "$CACHE/sonar-platform-plugin-0.3.0.jar" ] || fail "The pinned plugin version must not be downloaded"
+          grep -q 'SonarScanner CLI' "$WORK/logs/sonarqube-0.log" || fail "The plugin did not run SonarScanner"
+          [ "$OUTCOME" = failure ] || fail "The step should fail, since the server does not exist, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+          # The package has no Scan.toml, so the one the action wrote for the scan must be deleted.
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scan left changes in test: $(git status --porcelain -- test)"
+
+  sonarqube-properties-file:
+    name: SonarQube settings from sonar-project.properties
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only host-url and token are given, so the key and name come from the properties file,
+      # and the plugin is the pinned version.
+      - name: Scan with only host-url
+        id: properties
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/sonarqube/properties
+          category: properties
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+
+      - name: Scan with project-key also given
+        id: override
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/sonarqube/properties
+          category: override
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: override-key
+
+      - name: Check the resolved settings
+        shell: bash
+        env:
+          PROPERTIES_OUTCOME: ${{ steps.properties.outcome }}
+          PROPERTIES_RESULT: ${{ steps.properties.outputs.result }}
+          OVERRIDE_OUTCOME: ${{ steps.override.outcome }}
+          OVERRIDE_RESULT: ${{ steps.override.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          PROPERTIES_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-properties-*)"
+          OVERRIDE_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-override-*)"
+          jq . "$PROPERTIES_WORK/sonarqube.json" "$OVERRIDE_WORK/sonarqube.json"
+
+          jq -e '.[0] | ."project-key" == "properties-key" and ."project-name" == "Properties Name"' \
+            "$PROPERTIES_WORK/sonarqube.json" > /dev/null || fail "properties: the key and name must come from the properties file"
+          jq -e '.[0]."host-url" == "https://sonarqube.example.invalid"' "$PROPERTIES_WORK/sonarqube.json" > /dev/null \
+            || fail "properties: host-url must override sonar.host.url"
+          jq -e '.[0]."properties-file" | endswith("/test/sonarqube/properties/sonar-project.properties")' \
+            "$PROPERTIES_WORK/sonarqube.json" > /dev/null || fail "properties: the package's sonar-project.properties was not used"
+          jq -e '.[0].plugin == {kind: "version", value: "0.3.0"}' "$PROPERTIES_WORK/sonarqube.json" > /dev/null \
+            || fail "properties: the plugin must default to the pinned version 0.3.0"
+          [ -f "$RUNNER_TEMP/scan-ballerina-tools/sonar-platform-plugin-0.3.0.jar" ] || fail "properties: the pinned plugin was not downloaded"
+          grep -qF 'https://sonarqube.example.invalid/' "$PROPERTIES_WORK/logs/sonarqube-0.log" \
+            || fail "properties: SonarScanner did not report to host-url"
+          if grep -qF 'properties.example.invalid' "$PROPERTIES_WORK/logs/sonarqube-0.log"; then
+            fail "properties: SonarScanner used sonar.host.url instead of host-url"
+          fi
+          [ "$PROPERTIES_OUTCOME" = failure ] && [ "$PROPERTIES_RESULT" = error ] \
+            || fail "properties: expected the step to fail with result error, got '$PROPERTIES_OUTCOME' and '$PROPERTIES_RESULT'"
+
+          jq -e '.[0] | ."project-key" == "override-key" and ."project-name" == "Properties Name"' \
+            "$OVERRIDE_WORK/sonarqube.json" > /dev/null || fail "override: project-key must override sonar.projectKey only"
+          [ "$OVERRIDE_OUTCOME" = failure ] && [ "$OVERRIDE_RESULT" = error ] \
+            || fail "override: expected the step to fail with result error, got '$OVERRIDE_OUTCOME' and '$OVERRIDE_RESULT'"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scan must not change the package: $(git status --porcelain -- test)"
