@@ -21,7 +21,7 @@ jobs:
       security-events: write
       actions: read # Only needed in private repositories
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ballerina-platform/scan-ballerina@v1
         with:
           platforms: github-code-scanning
@@ -36,7 +36,7 @@ permissions:
   contents: read
   packages: read # The platform plugin is downloaded from GitHub Packages
 steps:
-  - uses: actions/checkout@v4
+  - uses: actions/checkout@v7
     with:
       fetch-depth: 0 # SonarQube needs history for blame and new-code detection
   - uses: ballerina-platform/scan-ballerina@v1
@@ -55,7 +55,7 @@ Settings left out of `platform-config` are read from the package's `sonar-projec
 
 ```yaml
 steps:
-  - uses: actions/checkout@v4
+  - uses: actions/checkout@v7
   - id: scan
     uses: ballerina-platform/scan-ballerina@v1
   - run: ./upload-to-defectdojo.sh "${{ steps.scan.outputs.sarif-file }}"
