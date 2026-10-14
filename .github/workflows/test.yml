@@ -24,6 +24,7 @@ jobs:
       - name: Run bal scan
         uses: ./
         with:
+          category: category-test
           ballerina-version: 2201.13.5
           paths: test
           platforms: github-code-scanning
