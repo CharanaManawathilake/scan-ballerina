@@ -101,7 +101,9 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
       echo
       GATE="off"
       [ "$FAIL_ON" != "none" ] && GATE="fail on more than $MAX finding(s) at or above $FAIL_ON severity"
-      echo "Packages scanned: ${PACKAGES_SCANNED:-0}. Gate: $GATE."
+      echo "Packages scanned: ${PACKAGES_SCANNED:-0}."
+      echo
+      echo "Gate: $GATE."
     fi
     if [ "$(jq 'length' <<< "$UPLOADS")" -gt 0 ]; then
       echo
