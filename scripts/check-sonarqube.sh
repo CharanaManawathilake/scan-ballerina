@@ -32,14 +32,20 @@ while IFS= read -r path; do
     || error "platform-config.sonarqube.packages has the path '$path', which matches no scanned package. Give the package directory relative to the repository root."
 done < <(jq -r '.[].path' <<< "$ITEMS")
 
-# Project keys must be unique, so the platform-level project-key and project-name can apply to
-# one package only: the one package without a project-key of its own.
-WITHOUT_KEY="$(jq -r --argjson items "$ITEMS" \
-  '[.[] | .path as $p | select(($items | map(select(.path == $p)) | first // {} | ."project-key" // "") == "")] | length' \
-  <<< "$UNITS")"
-if [ "$WITHOUT_KEY" -gt 1 ] && jq -e 'has("project-key") or has("project-name")' <<< "$SONAR" > /dev/null; then
-  error "platform-config.sonarqube.project-key and project-name apply to every package without a project-key of its own, and $WITHOUT_KEY packages have none. Set project-key for each package under packages, and leave the platform-level fields out."
-fi
+# The platform-level project-key and project-name are for a scan of one package. With more
+# packages they would name one project for all of them, so each package sets its own under
+# packages. With one package, a field set both there and in the package's item is an error.
+UNIT_COUNT="$(jq 'length' <<< "$UNITS")"
+for field in project-key project-name; do
+  jq -e --arg f "$field" 'has($f)' <<< "$SONAR" > /dev/null || continue
+  if [ "$UNIT_COUNT" -gt 1 ]; then
+    error "platform-config.sonarqube.$field is for a single package, but $UNIT_COUNT packages are scanned. Set $field for each package under packages, and leave it out of the platform level."
+  else
+    while IFS= read -r path; do
+      error "platform-config.sonarqube.$field is set at the platform level and in the packages item '$path'. Set it in one place."
+    done < <(jq -r --arg f "$field" '.[] | select(has($f)) | .path' <<< "$ITEMS")
+  fi
+done
 
 # Resolves a plugin-path or plugin-version from platform-config. Prints {kind, value}, or a line
 # starting with "!" and the problem, since it runs in a subshell.

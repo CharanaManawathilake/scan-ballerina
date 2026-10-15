@@ -141,8 +141,8 @@ The fields at the platform level are the defaults for every scanned package. An 
 | `properties-file` | No | Properties file, relative to the repository root. Overrides `sonarProjectPropertiesPath` in `Scan.toml`. |
 | `host-url` | Yes, unless set under `packages` or in the properties file | SonarQube server URL. Must be `https`. Overrides `sonar.host.url`. |
 | `token` | Yes, unless set under `packages` | Token for submitting analyses. Pass it from a secret. |
-| `project-key` | Yes, unless set under `packages` or in the properties file | Project key. Overrides `sonar.projectKey`. At the platform level, only when one package has no `project-key` of its own. |
-| `project-name` | No | Project name. Overrides `sonar.projectName`. At the platform level, only when one package has no `project-key` of its own. |
+| `project-key` | Yes, unless set under `packages` or in the properties file | Project key. Overrides `sonar.projectKey`. At the platform level, only when one package is scanned. |
+| `project-name` | No | Project name. Overrides `sonar.projectName`. At the platform level, only when one package is scanned. |
 | `packages` | No | Per-package settings. Each item has a `path`, relative to the repository root, and any of the fields above. Platform level only. |
 
 Each setting of a package is resolved field by field: its `packages` item, then the platform level, then the package's `Scan.toml` and properties file. Paths in `platform-config` are relative to the repository root, and paths in `Scan.toml` are relative to the package.
@@ -150,7 +150,7 @@ Each setting of a package is resolved field by field: its `packages` item, then 
 - **Platform plugin:** `plugin-path` or `plugin-version`, otherwise the `path` of the `sonarqube` `[[platform]]` entry in `Scan.toml` (a relative path or an `https` URL), otherwise the version this release pins. An absolute path fails, since it points to one machine. A `plugin-path` or `plugin-version` in an item replaces both platform-level fields.
 - **Properties file:** `properties-file`, otherwise `sonarProjectPropertiesPath` in `Scan.toml`, otherwise `sonar-project.properties` in the package root, if it exists.
 - **Server and token:** an item that sets `host-url` must also set `token`, so a token is never sent to a server it was not configured for. Every URL must be `https`, including one from the properties file.
-- **Project:** each package is a separate SonarQube analysis, so packages on the same server need different project keys.
+- **Project:** each package is a separate SonarQube analysis, so packages on the same server need different project keys. `project-key` and `project-name` at the platform level are for a scan of one package, counted after `exclude-paths`: with more packages they fail, so set them for each package under `packages`. With one package, setting the same field at the platform level and in its item also fails.
 
 The platform plugin is published to GitHub Packages, which needs a token with `read:packages` even for public packages. Give the job `packages: read`, or set `plugin-path` to a JAR in the repository or an `https` URL.
 

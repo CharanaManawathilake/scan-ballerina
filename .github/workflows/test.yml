@@ -645,6 +645,63 @@ jobs:
               token: dummy-token
               project-key: shared-key
 
+      # orders has a key of its own, which does not make the platform-level key apply to payments.
+      - name: Platform-level project key with one package keyed under packages
+        id: leftover-project-key
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi
+          category: leftover-project-key
+          artifacts: sarif
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: shared-key
+              packages:
+                - path: test/projects/multi/orders
+                  project-key: orders
+
+      - name: Platform-level project name for two keyed packages
+        id: shared-project-name
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi
+          category: shared-project-name
+          artifacts: sarif
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-name: Shared Name
+              packages:
+                - path: test/projects/multi/orders
+                  project-key: orders
+                - path: test/projects/multi/payments
+                  project-key: payments
+
+      - name: Project key at the platform level and in the package's item
+        id: project-key-twice
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: project-key-twice
+          artifacts: sarif
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+              packages:
+                - path: test/projects/multi/orders
+                  project-key: orders-item
+
       - name: http server URL
         id: http-host
         continue-on-error: true
@@ -933,6 +990,57 @@ jobs:
             || fail "override: expected the step to fail with result error, got '$OVERRIDE_OUTCOME' and '$OVERRIDE_RESULT'"
           [ -z "$(git status --porcelain -- test)" ] || fail "The scan must not change the package: $(git status --porcelain -- test)"
 
+  sonarqube-platform-project-key:
+    name: SonarQube project key at the platform level for one package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # test/projects/multi holds two packages, and exclude-paths leaves one, so the platform-level
+      # key applies to it. Its item sets only project-name, which does not conflict with the key.
+      - name: Scan
+        id: scan
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi
+          exclude-paths: test/projects/multi/payments
+          category: platform-project-key
+          artifacts: sarif
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: orders
+              packages:
+                - path: test/projects/multi/orders
+                  project-name: Orders Service
+
+      - name: Check the resolved settings
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.scan.outcome }}
+          RESULT: ${{ steps.scan.outputs.result }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-platform-project-key-*)"
+          jq . "$WORK/sonarqube.json"
+          [ "$PACKAGES" = 1 ] || fail "packages-scanned is '$PACKAGES', expected 1 after exclude-paths"
+          jq -e 'length == 1 and (.[0] | .package == "test/projects/multi/orders"
+              and ."project-key" == "orders" and ."project-name" == "Orders Service")' \
+            "$WORK/sonarqube.json" > /dev/null || fail "orders must take the platform-level key and the name from its item"
+          # The settings passed, so the scan reached SonarScanner, which fails on the dummy server.
+          grep -q 'SonarScanner CLI' "$WORK/logs/sonarqube-0.log" || fail "The plugin did not run SonarScanner"
+          [ "$OUTCOME" = failure ] || fail "The step should fail, since the server does not exist, but its outcome is '$OUTCOME'"
+          [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+
   # Annotations reach the check run only after the job that wrote them has finished, so they are
   # checked from this job.
   annotation-checks:
@@ -976,7 +1084,10 @@ jobs:
               "no-token": "Package 'test/projects/multi/orders' has no SonarQube token",
               "empty-token": "platform-config.sonarqube has an empty token",
               "duplicate-keys": "resolve to the same SonarQube project key \"shared-key\"",
-              "shared-project-key": "apply to every package without a project-key of its own, and 2 packages have none",
+              "shared-project-key": "platform-config.sonarqube.project-key is for a single package, but 2 packages are scanned",
+              "leftover-project-key": "platform-config.sonarqube.project-key is for a single package, but 2 packages are scanned",
+              "shared-project-name": "platform-config.sonarqube.project-name is for a single package, but 2 packages are scanned",
+              "project-key-twice": "platform-config.sonarqube.project-key is set at the platform level and in the packages item 'test/projects/multi/orders'",
               "http-host": "platform-config.sonarqube.host-url must be an https URL",
               "unmatched-package": "has the path 'test/projects/missing', which matches no scanned package",
               "old-plugin-version": "platform-config.sonarqube.plugin-version is 0.2.0, but the oldest supported version is 0.3.0"
