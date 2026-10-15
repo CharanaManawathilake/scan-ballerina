@@ -59,7 +59,7 @@ inputs:
     required: false
     default: 'true'
   artifacts:
-    description: 'Comma separated reports to save as a workflow artifact named after the category: sarif for the merged SARIF file, ballerina for the JSON report bal scan writes for each package. Empty saves nothing.'
+    description: 'Comma separated reports to save as a workflow artifact named after the category: sarif for the merged SARIF file, ballerina or json (the same report) for the JSON report bal scan writes for each package. Empty saves nothing.'
     required: false
     default: ''
   platform-config:

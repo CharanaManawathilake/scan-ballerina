@@ -50,10 +50,12 @@ selected() { one_of "$1" "${SELECTED[@]+"${SELECTED[@]}"}"; }
 # Artifacts
 ARTIFACT_KINDS=()
 while IFS= read -r a; do
+  # json is another name for ballerina, the report of bal scan --format=json.
+  [ "$a" = json ] && a=ballerina
   if one_of "$a" "${KNOWN_ARTIFACTS[@]}"; then
     one_of "$a" "${ARTIFACT_KINDS[@]+"${ARTIFACT_KINDS[@]}"}" || ARTIFACT_KINDS+=("$a")
   else
-    error "artifacts has an unknown report '$a'. Accepted values: ${KNOWN_ARTIFACTS[*]}."
+    error "artifacts has an unknown report '$a'. Accepted values: ${KNOWN_ARTIFACTS[*]} json."
   fi
 done < <(split_list "${ARTIFACTS:-}")
 

@@ -461,6 +461,15 @@ jobs:
           category: artifacts-empty
           artifacts: ''
 
+      # json is another name for ballerina, so the two together save one report.
+      - name: Scan and save the JSON report by both names
+        id: json
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: artifacts-json
+          artifacts: json,ballerina
+
       - name: Scan with an unknown report
         id: unknown
         continue-on-error: true
@@ -483,6 +492,7 @@ jobs:
           EMPTY_RESULT: ${{ steps.empty.outputs.result }}
           EMPTY_SARIF: ${{ steps.empty.outputs.sarif-file }}
           EMPTY_UPLOADS: ${{ steps.empty.outputs.uploads }}
+          JSON_UPLOADS: ${{ steps.json.outputs.uploads }}
           UNKNOWN_OUTCOME: ${{ steps.unknown.outcome }}
           UNKNOWN_RESULT: ${{ steps.unknown.outputs.result }}
         run: |
@@ -510,6 +520,16 @@ jobs:
             || fail "empty: uploads must have no artifact entry: $EMPTY_UPLOADS"
           [ ! -e "$EMPTY_WORK/artifact" ] || fail "empty: the reports must not be collected"
           [ ! -e "$EMPTY_WORK/ballerina" ] || fail "empty: bal scan --format=json must not run"
+
+          [ "$(cd "$DIR/artifacts-json" && find . -type f)" = ./test/projects/multi/orders/scan_results.json ] \
+            || fail "json: the artifact must hold the Ballerina report only, once"
+          jq -e 'type == "array" and length > 0' "$DIR/artifacts-json/test/projects/multi/orders/scan_results.json" > /dev/null \
+            || fail "json: the Ballerina report has no findings"
+          jq -e '.artifact.name == "artifacts-json"' <<< "$JSON_UPLOADS" > /dev/null \
+            || fail "json: uploads has no artifact entry: $JSON_UPLOADS"
+          JSON_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-artifacts-json-*)"
+          [ "$(ls "$JSON_WORK"/logs/scan-json-*.log | wc -l)" -eq 1 ] \
+            || fail "json: json and ballerina must run bal scan --format=json once per package"
 
           [ "$UNKNOWN_OUTCOME" = failure ] || fail "unknown: an unknown report must fail the step, but its outcome is '$UNKNOWN_OUTCOME'"
           [ "$UNKNOWN_RESULT" = error ] || fail "unknown: result is '$UNKNOWN_RESULT', expected error"

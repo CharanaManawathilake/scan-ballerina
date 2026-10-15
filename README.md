@@ -72,7 +72,7 @@ steps:
 The action uploads one workflow artifact, named after `category`, with the reports you list:
 
 - `sarif`: the merged SARIF file, as `<category>.sarif`.
-- `ballerina`: the JSON report `bal scan` writes for each package or workspace, as `<package path>/scan_results.json`. It takes a second `bal scan` run per package. These reports are as `bal scan` wrote them, so `exclude-tests` and file globs in `exclude-paths` are not applied.
+- `ballerina`, or `json`, which is the same report: the JSON report `bal scan` writes for each package or workspace, as `<package path>/scan_results.json`. It takes a second `bal scan` run per package. These reports are as `bal scan` wrote them, so `exclude-tests` and file globs in `exclude-paths` are not applied.
 
 Artifact names are unique within a workflow run, so give each scan its own `category`, including each job of a matrix. Saving the artifact needs no extra permissions, so it also works in pull requests from forks.
 
@@ -105,7 +105,7 @@ The findings are uploaded before the gate is applied, so they reach the platform
 | `max-findings` | `0` | Findings at or above `fail-on-severity` allowed before the step fails. |
 | `annotations` | `false` | Show each counted finding as a file and line annotation. |
 | `job-summary` | `true` | Write the result and the high, medium and low counts to the job summary. |
-| `artifacts` | empty | Comma separated reports to save as a workflow artifact named after `category`: `sarif` for the merged SARIF file, `ballerina` for the JSON report `bal scan` writes for each package. Empty saves nothing. See [Save the reports as an artifact](#save-the-reports-as-an-artifact). |
+| `artifacts` | empty | Comma separated reports to save as a workflow artifact named after `category`: `sarif` for the merged SARIF file, `ballerina` or `json` (the same report) for the JSON report `bal scan` writes for each package. Empty saves nothing. See [Save the reports as an artifact](#save-the-reports-as-an-artifact). |
 | `platform-config` | empty | YAML mapping, keyed by platform, with the settings and credentials each selected platform needs. JSON is accepted. |
 | `github-token` | `github.token` | Token for installing Ballerina, downloading the SonarQube platform plugin from GitHub Packages and uploading to code scanning. |
 
@@ -208,7 +208,7 @@ The action is a composite action. Its logic is in the shell and `jq` scripts in 
 3. `check-sonarqube.sh` resolves each package's SonarQube settings.
 4. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) installs Ballerina, unless `bal` is already on the path.
 5. `install-scan-tool.sh` installs the scan tool, unless that version is already active. With SonarQube, `install-sonarqube.sh` downloads the platform plugin and the SonarScanner CLI, once per job.
-6. `scan.sh` runs `bal scan --format=sarif` on each package, with `artifacts: ballerina` also `bal scan --format=json`, and with SonarQube `bal scan --platforms=sonarqube`.
+6. `scan.sh` runs `bal scan --format=sarif` on each package, with `artifacts: ballerina` or `json` also `bal scan --format=json`, and with SonarQube `bal scan --platforms=sonarqube`.
 7. `merge-sarif.sh` normalizes the paths, drops filtered findings and merges the reports into one run.
 8. `github/codeql-action/upload-sarif` uploads the SARIF file to code scanning.
 9. `collect-artifacts.sh` gathers the reports listed in `artifacts`, and `actions/upload-artifact` saves them, also when an earlier step failed.
