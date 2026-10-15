@@ -14,8 +14,10 @@ PINNED_TOOL_VERSION="0.12.0"
 MIN_BALLERINA_VERSION="2201.13.2"
 
 # The SonarQube platform plugin of the scan tool, published to GitHub Packages, which needs a token
-# with read:packages even for public packages.
+# with read:packages even for public packages. Older plugin versions do not work with the pinned
+# scan tool, so plugin-version cannot go below the minimum.
 PINNED_SONAR_PLUGIN_VERSION="0.3.0"
+MIN_SONAR_PLUGIN_VERSION="0.3.0"
 SONAR_PLUGIN_URL="https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/{version}/sonar-platform-plugin-{version}.jar"
 
 # The SonarScanner CLI an action release pins, with the SHA-256 of each distribution. Each one

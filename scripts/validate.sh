@@ -198,6 +198,17 @@ fi
 SONARQUBE=false
 if selected sonarqube; then
   while IFS= read -r e; do [ -n "$e" ] && error "$e"; done < <(sonarqube_schema_errors)
+  # Each plugin-version, at the platform level and under packages. latest and malformed versions
+  # are left to the checks above.
+  while IFS=$'\t' read -r where v; do
+    [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || continue
+    version_ge "$v" "$MIN_SONAR_PLUGIN_VERSION" \
+      || error "$where.plugin-version is $v, but the oldest supported version is $MIN_SONAR_PLUGIN_VERSION. Set $MIN_SONAR_PLUGIN_VERSION or later, or leave it out to use the pinned version $PINNED_SONAR_PLUGIN_VERSION."
+  done < <(jq -r '.sonarqube // {} | select(type == "object")
+    | (["platform-config.sonarqube", ."plugin-version"]),
+      (.packages // [] | select(type == "array") | to_entries[] | select(.value | type == "object")
+        | ["platform-config.sonarqube.packages[\(.key)]", .value."plugin-version"])
+    | select(.[1] != null) | map(tostring) | @tsv' <<< "$CONFIG")
   SONARQUBE=true
   # Every token field that is present, at the platform level and under packages. A secret that is
   # not available resolves to an empty value.
