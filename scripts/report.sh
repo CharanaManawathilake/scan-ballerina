@@ -16,6 +16,10 @@ CATEGORY="$(trim "${CATEGORY:-bal-scan}")"
 FAIL_ON="$(tr '[:upper:]' '[:lower:]' <<< "$(trim "${FAIL_ON_SEVERITY:-none}")")"
 MAX="$(trim "${MAX_FINDINGS:-0}")"
 [[ "$MAX" =~ ^[0-9]+$ ]] || MAX=0
+# The merge step sets the counts whenever it succeeds, so missing counts mean it never finished,
+# such as when the run was cancelled or timed out, which FAILED_STEP does not catch.
+COUNTED=false
+[ -n "${HIGH:-}" ] && [ -n "${MEDIUM:-}" ] && [ -n "${LOW:-}" ] && COUNTED=true
 HIGH="${HIGH:-0}" MEDIUM="${MEDIUM:-0}" LOW="${LOW:-0}"
 
 # Uploads: one entry per platform the findings were sent to.
@@ -42,6 +46,9 @@ if [ -n "${FAILED_STEP:-}" ]; then
 elif [ "${UNIT_COUNT:-0}" = "0" ]; then
   RESULT=skipped
   REASONS+=("No Ballerina package was found.")
+elif [ "$COUNTED" != "true" ]; then
+  RESULT=error
+  REASONS+=("The findings were not counted, so the scan did not finish. The run may have been cancelled or timed out.")
 else
   case "$FAIL_ON" in
     high) SELECTED=$HIGH ;;
