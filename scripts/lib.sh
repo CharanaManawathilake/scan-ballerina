@@ -177,33 +177,80 @@ platform_config_json() {
 
 INVALID_PLATFORM_CONFIG="platform-config is not valid YAML. Give a mapping keyed by platform, such as 'sonarqube:'."
 
-# Prints the Scan.toml file a package's scan reads, empty when there is none, or the URL when
-# Ballerina.toml points [scan] configPath to a remote file. $1 is the package directory.
-scan_toml_path() {
-  local pkg="$1" config
-  config="$(yq -p toml -o json -I0 '.scan.configPath // ""' "$pkg/Ballerina.toml" 2> /dev/null || true)"
-  config="$(jq -r '.' <<< "${config:-\"\"}" 2> /dev/null || true)"
-  if [ -z "$config" ]; then
-    [ -f "$pkg/Scan.toml" ] && printf '%s' "$pkg/Scan.toml"
-    return 0
-  fi
-  if [[ "$config" =~ ^https?:// ]]; then
-    printf '%s' "$config"
-  elif [[ "$config" = /* || "$config" =~ ^[A-Za-z]:[/\\] ]]; then
-    printf '%s' "$(to_unix_path "$config")"
+# Prints the [scan] table of a package's Ballerina.toml as JSON, "null" when it has none or the
+# file cannot be read, in which case bal scan reports the problem. $1 is the package directory.
+scan_table() {
+  local json
+  json="$(yq -p toml -o json -I0 '.scan' "$1/Ballerina.toml" 2> /dev/null)" || json=null
+  printf '%s' "${json:-null}"
+}
+
+# Resolves a [scan] configPath of package $1: absolute, or relative to the package.
+resolve_config_path() {
+  if is_absolute_path "$2"; then
+    printf '%s' "$(to_unix_path "$2")"
   else
-    printf '%s' "$pkg/$config"
+    printf '%s' "$1/$(to_unix_path "$2")"
   fi
+}
+
+# bal scan reads Scan.toml from the package root, or from [scan] configPath in Ballerina.toml when
+# the table is there. It treats a configPath that is not an existing file as a URL to download,
+# and a [scan] table without configPath as an error. find-packages.sh checks each package's
+# setting and downloads a remote Scan.toml into the work directory, so the scripts after it read
+# and change that copy.
+
+# Prints [scan] configPath of package $1, empty when it is not set.
+scan_config_value() {
+  jq -r 'if type == "object" and (.configPath | type) == "string" then .configPath else "" end' <<< "$(scan_table "$1")"
+}
+
+# Prints the URL package $1 reads its Scan.toml from, empty when the file is local or there is none.
+scan_config_url() {
+  local config
+  config="$(scan_config_value "$1")"
+  if [[ "$config" =~ ^[A-Za-z][A-Za-z0-9+.-]*:// ]] && [ ! -f "$(resolve_config_path "$1" "$config")" ]; then
+    printf '%s' "$config"
+  fi
+  return 0
+}
+
+# Prints the work-directory copy of a remote Scan.toml, one per URL.
+remote_scan_toml_file() {
+  printf '%s/remote-scan-toml/%s.toml' "${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}" \
+    "$(printf '%s' "$1" | sha256_of /dev/stdin | cut -c1-16)"
+}
+
+# Prints the Scan.toml file a package's scan reads, empty when there is none: the work-directory
+# copy for a remote file. $1 is the package directory.
+scan_toml_path() {
+  local pkg="$1" config url
+  config="$(scan_config_value "$pkg")"
+  url="$(scan_config_url "$pkg")"
+  if [ -n "$url" ]; then
+    remote_scan_toml_file "$url"
+  elif [ -n "$config" ]; then
+    resolve_config_path "$pkg" "$config"
+  elif [ -f "$pkg/Scan.toml" ]; then
+    printf '%s' "$pkg/Scan.toml"
+  fi
+  return 0
+}
+
+# Prints a Ballerina.toml ($1) with the configPath of its [scan] table set to $2. Only a
+# 'configPath = ...' line directly under [scan] is changed, so callers check the result.
+with_config_path() {
+  awk -v path="$2" '
+    /^[[:space:]]*\[/ { inscan = ($0 ~ /^[[:space:]]*\[[[:space:]]*scan[[:space:]]*\][[:space:]]*(#.*)?\r?$/) }
+    inscan && /^[[:space:]]*configPath[[:space:]]*=/ { print "configPath = \"" path "\""; next }
+    { print }
+  ' "$1"
 }
 
 # Prints the [[platform]] entries of a Scan.toml file as a JSON array.
 scan_toml_platforms() {
-  local file="$1" json
-  if [[ "$file" =~ ^https?:// ]]; then
-    json="$(curl -fsSL "$file" | yq -p toml -o json -I0 '.platform // []' 2> /dev/null)" || return 1
-  else
-    json="$(yq -p toml -o json -I0 '.platform // []' "$file" 2> /dev/null)" || return 1
-  fi
+  local json
+  json="$(yq -p toml -o json -I0 '.platform // []' "$1" 2> /dev/null)" || return 1
   printf '%s' "$json"
 }
 

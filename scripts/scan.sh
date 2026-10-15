@@ -12,6 +12,9 @@
 #     its sonarqube [[platform]] entry points to the resolved plugin for this pass only: the file
 #     is restored, or deleted when the action created it, as soon as the pass ends. So are the
 #     results file the platform plugin writes and the .scannerwork directory of SonarScanner.
+#   - A remote Scan.toml cannot be changed, so for each pass [scan] configPath in Ballerina.toml
+#     points to a changed copy of the file find-packages.sh downloaded, and Ballerina.toml is
+#     restored as soon as the pass ends.
 # A failing unit does not stop the others, so every failure is reported; the step then fails.
 #
 # Inputs (environment): SCAN_WORK_DIR, SONARQUBE, PLATFORM_CONFIG, SCANNER_BIN, INCLUDE_RULES,
@@ -110,43 +113,56 @@ drop_platforms() {
 # restore_files runs. The other entries and settings are kept. The properties file is passed to
 # SonarScanner through the environment instead, so the entry has no sonarProjectPropertiesPath.
 use_plugin() {
-  local settings="$1" file kind jar tmp
-  kind="$(jq -r '."scan-toml-kind"' <<< "$settings")"
-  [ "$kind" != remote ] || return 0
+  local settings="$1" pkg file tmp jar
+  pkg="$(jq -r '.package' <<< "$settings")"
+  file="$(jq -r '."scan-toml"' <<< "$settings")"
   jar="$(to_native_path "$(jq -r '."plugin-file"' <<< "$settings")")"
-  if [ "$kind" = file ]; then
-    file="$(jq -r '."scan-toml"' <<< "$settings")"
-  else
-    file="$(jq -r '.package' <<< "$settings")/Scan.toml"
-  fi
-  protect "$file"
   tmp="$(mktemp "$WORK/Scan.toml.XXXXXX")"
-  if [ "$kind" = file ]; then
+  if [ -n "$file" ]; then
     drop_platforms sonarqube < "$file" > "$tmp"
     echo >> "$tmp"
   fi
   printf '[[platform]]\nname = "sonarqube"\npath = "%s"\n' "$jar" >> "$tmp"
-  cp "$tmp" "$file"
-  rm -f "$tmp"
+  use_scan_toml "$pkg" "$tmp"
 }
 
-# Hides the [[platform]] entries of a package's Scan.toml until restore_files runs.
+# Hides the [[platform]] entries of a package's Scan.toml until restore_files runs. A remote
+# Scan.toml is always replaced with a local copy, so that the scan reads the file that
+# find-packages.sh downloaded and checked.
 hide_platforms() {
   local pkg="$1" file tmp
   file="$(scan_toml_path "$pkg")"
   [ -n "$file" ] || return 0
-  if [[ "$file" =~ ^https?:// ]]; then
-    if [ "$(scan_toml_platforms "$file" | jq 'length' 2> /dev/null || echo 0)" -gt 0 ]; then
-      log_warning "Package '$pkg' reads a remote Scan.toml with [[platform]] entries, which the action cannot hide, so bal scan writes no SARIF report for it."
-    fi
-    return 0
+  if [ -z "$(scan_config_url "$pkg")" ]; then
+    [ -f "$file" ] && grep -Eq '^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]' "$file" || return 0
   fi
-  [ -f "$file" ] && grep -Eq '^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]' "$file" || return 0
-  protect "$file"
   tmp="$(mktemp "$WORK/Scan.toml.XXXXXX")"
   drop_platforms all < "$file" > "$tmp"
-  cp "$tmp" "$file"
-  rm -f "$tmp"
+  use_scan_toml "$pkg" "$tmp"
+}
+
+# Makes package $1 read the Scan.toml in file $2 until restore_files runs. A local Scan.toml, or
+# the package's Scan.toml when it has none, is overwritten with it. A remote one cannot be, so
+# [scan] configPath in Ballerina.toml points to the file instead.
+use_scan_toml() {
+  local pkg="$1" new="$2" target native
+  if [ -n "$(scan_config_url "$pkg")" ]; then
+    native="$(to_native_path "$(cd "$(dirname "$new")" && pwd -P)/$(basename "$new")")"
+    protect "$pkg/Ballerina.toml"
+    target="$(mktemp "$WORK/Ballerina.toml.XXXXXX")"
+    with_config_path "$pkg/Ballerina.toml" "$native" > "$target"
+    cp "$target" "$pkg/Ballerina.toml"
+    rm -f "$target"
+    # find-packages.sh checked that the line can be changed. This catches a file changed since.
+    [ "$(scan_config_value "$pkg")" = "$native" ] \
+      || die "Could not point [scan] configPath in '$pkg/Ballerina.toml' to the changed copy of its remote Scan.toml."
+  else
+    target="$(scan_toml_path "$pkg")"
+    [ -n "$target" ] || target="$pkg/Scan.toml"
+    protect "$target"
+    cp "$new" "$target"
+    rm -f "$new"
+  fi
 }
 
 # Runs bal scan in a directory and keeps its output in a log file. Returns its exit code.

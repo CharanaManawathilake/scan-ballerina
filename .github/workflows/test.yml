@@ -862,7 +862,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 0.3.0 is both the minimum and the pinned version, and the only published version allowed.
       - name: Scan
         id: scan
         continue-on-error: true
@@ -1115,11 +1114,152 @@ jobs:
           done
           [ "$FAILURES" -eq 0 ] || exit 1
 
+  # test/remote-scan-toml reads its Scan.toml from an https URL, which the action downloads and
+  # changes a local copy of for each scan. The served file excludes the package's only finding,
+  # and its sonarqube [[platform]] entry names a plugin URL.
+  remote-scan-toml:
+    name: Remote Scan.toml
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Serve Scan.toml and the plugin over https
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DIR="$RUNNER_TEMP/scan-toml-server"
+          mkdir -p "$DIR/www"
+          cd "$DIR"
+          curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -o www/sonar-platform-plugin.jar \
+            https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/0.3.0/sonar-platform-plugin-0.3.0.jar
+          printf '%s\n' '[rule]' 'exclude = ["ballerina:1"]' '' '[[platform]]' 'name = "sonarqube"' \
+            'path = "https://localhost:8443/sonar-platform-plugin.jar"' > www/Scan.toml
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=localhost \
+            -addext subjectAltName=DNS:localhost -keyout key.pem -out cert.pem
+          sudo cp cert.pem /usr/local/share/ca-certificates/scan-toml-server.crt
+          sudo update-ca-certificates
+          cat > server.py << 'PY'
+          import functools, http.server, ssl
+          handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory="www")
+          server = http.server.HTTPServer(("localhost", 8443), handler)
+          context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+          context.load_cert_chain("cert.pem", "key.pem")
+          server.socket = context.wrap_socket(server.socket, server_side=True)
+          server.serve_forever()
+          PY
+          nohup python3 server.py > server.log 2>&1 &
+          for _ in $(seq 1 10); do
+            curl -fsS -o /dev/null https://localhost:8443/Scan.toml && exit 0
+            sleep 1
+          done
+          cat server.log
+          echo "::error::The server did not start"
+          exit 1
+
+      - name: Record Ballerina.toml
+        shell: bash
+        run: sha256sum test/remote-scan-toml/Ballerina.toml | tee "$RUNNER_TEMP/ballerina-toml.sha256"
+
+      # The [[platform]] entry is hidden from the copy, so bal scan writes the SARIF report.
+      - name: Scan without platforms
+        id: sarif
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/remote-scan-toml
+          category: remote-scan-toml
+
+      # The SonarQube scan fails on the dummy server, after the plugin from the entry ran.
+      - name: Scan with SonarQube
+        id: sonarqube
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/remote-scan-toml
+          category: remote-scan-toml-sonarqube
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: remote-scan-toml
+
+      - name: Check the scans
+        shell: bash
+        env:
+          SARIF_RESULT: ${{ steps.sarif.outputs.result }}
+          SARIF_FILE: ${{ steps.sarif.outputs.sarif-file }}
+          SARIF_TOTAL: ${{ steps.sarif.outputs.total-count }}
+          SONARQUBE_OUTCOME: ${{ steps.sonarqube.outcome }}
+          SONARQUBE_RESULT: ${{ steps.sonarqube.outputs.result }}
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+
+          [ "$SARIF_RESULT" = passed ] || fail "sarif: result is '$SARIF_RESULT', expected passed"
+          [ -f "$SARIF_FILE" ] || fail "sarif: no SARIF file, so the [[platform]] entry was not hidden"
+          [ "$SARIF_TOTAL" = 0 ] || fail "sarif: total-count is '$SARIF_TOTAL', expected 0, since the remote Scan.toml excludes ballerina:1"
+
+          SONARQUBE_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-remote-scan-toml-sonarqube-*)"
+          jq . "$SONARQUBE_WORK/sonarqube.json"
+          jq -e '.[0] | ."scan-toml-kind" == "remote"
+              and .plugin == {kind: "url", value: "https://localhost:8443/sonar-platform-plugin.jar"}' \
+            "$SONARQUBE_WORK/sonarqube.json" > /dev/null || fail "sonarqube: the plugin must resolve to the URL in the remote Scan.toml"
+          grep -q 'SonarScanner CLI' "$SONARQUBE_WORK/logs/sonarqube-0.log" \
+            || fail "sonarqube: the plugin did not run SonarScanner"
+          [ "$SONARQUBE_OUTCOME" = failure ] && [ "$SONARQUBE_RESULT" = error ] \
+            || fail "sonarqube: expected the step to fail with result error, got '$SONARQUBE_OUTCOME' and '$SONARQUBE_RESULT'"
+
+          sha256sum -c "$RUNNER_TEMP/ballerina-toml.sha256" || fail "Ballerina.toml must be restored byte for byte"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scans left changes in test: $(git status --porcelain -- test)"
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+  # The packages in test/scan-config point [scan] configPath in Ballerina.toml to a Scan.toml the
+  # action cannot use: an http URL, an https URL that cannot be reached, a missing file, and no
+  # configPath at all. The annotation-checks job checks the error each one reported.
+  scan-config:
+    name: Scan.toml settings that fail
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan
+        id: scan-config
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/scan-config
+          category: scan-config
+
+      - name: Check that each step failed before anything was downloaded
+        shell: bash
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+          while IFS=$'\t' read -r id outcome result; do
+            [ "$outcome" = failure ] || fail "$id: the step should fail, but its outcome is '$outcome'"
+            [ "$result" = error ] || fail "$id: result is '$result', expected error"
+          done < <(jq -r 'to_entries[] | [.key, .value.outcome, .value.outputs.result // ""] | @tsv' <<< "$STEPS")
+          [ ! -d "$RUNNER_TEMP/scan-ballerina-tools" ] || fail "A Scan.toml the action cannot use must fail before anything is downloaded"
+          if command -v bal > /dev/null 2>&1; then
+            fail "A Scan.toml the action cannot use must fail before Ballerina is installed"
+          fi
+          [ "$FAILURES" -eq 0 ] || exit 1
+
   # Annotations reach the check run only after the job that wrote them has finished, so they are
   # checked from this job.
   annotation-checks:
     name: Check the annotations
-    needs: [annotations, sonarqube-invalid-settings]
+    needs: [annotations, sonarqube-invalid-settings, scan-config]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
@@ -1186,4 +1326,29 @@ jobs:
             <<< "$ANNOTATIONS" > /dev/null; then
             fail "unmatched-package: an item that matches no package must not be reported as setting project-key twice"
           fi
+          [ "$FAILURES" -eq 0 ] || exit 1
+
+      - name: Check the errors of the Scan.toml settings
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The errors each step must report, by step ID, which is also its category.
+          EXPECTED: |
+            [
+              ["scan-config", "Package 'test/scan-config/http' reads its Scan.toml from 'http://localhost:8443/Scan.toml'. Use an https URL"],
+              ["scan-config", "Package 'test/scan-config/unreachable': could not download its Scan.toml from 'https://scan-config.example.invalid/Scan.toml'"],
+              ["scan-config", "Package 'test/scan-config/missing' sets [scan] configPath in Ballerina.toml to 'config/Scan.toml', which is not an existing file"],
+              ["scan-config", "Package 'test/scan-config/no-config-path' has a [scan] table in Ballerina.toml without configPath"]
+            ]
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+          ANNOTATIONS="$(bash .github/scripts/annotations.sh 'Scan.toml settings that fail')"
+          jq . <<< "$ANNOTATIONS"
+          while IFS=$'\t' read -r id message; do
+            jq -e --arg c "bal scan ($id)" --arg m "$message" \
+              'any(.[]; .title == $c and .annotation_level == "failure" and (.message | contains($m)))' \
+              <<< "$ANNOTATIONS" > /dev/null || fail "$id: no error containing: $message"
+          done < <(jq -r '.[] | @tsv' <<< "$EXPECTED")
           [ "$FAILURES" -eq 0 ] || exit 1

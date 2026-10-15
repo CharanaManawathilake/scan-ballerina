@@ -9,9 +9,10 @@
 #
 # Inputs (environment): SCAN_WORK_DIR, PLATFORM_CONFIG, CATEGORY.
 # Writes: $SCAN_WORK_DIR/sonarqube.json, a list of {package, scan-toml, scan-toml-kind, plugin,
-# properties-file, host-url, project-key, project-name}. plugin is {kind, value}, where kind is
-# version, file, url or remote (the sonarqube entry of a remote Scan.toml, used as is). Tokens
-# are not written; scan.sh reads them from PLATFORM_CONFIG.
+# properties-file, host-url, project-key, project-name}. scan-toml-kind is file, remote (scan-toml
+# is then the downloaded copy), or none when the package has no Scan.toml. plugin is {kind, value},
+# where kind is version, file or url. Tokens are not written; scan.sh reads them from
+# PLATFORM_CONFIG.
 
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -82,22 +83,18 @@ while IFS= read -r unit; do
     jq -r --arg f "$1" --argjson item "$item" '$item[$f] // .[$f] // "" | tostring' <<< "$SONAR"
   }
 
-  # The package's Scan.toml and its sonarqube [[platform]] entry.
+  # The package's Scan.toml and its sonarqube [[platform]] entry. For a remote Scan.toml, that is
+  # the copy find-packages.sh downloaded, and messages name its URL.
   scan_toml="$(scan_toml_path "$pkg")"
+  scan_url="$(scan_config_url "$pkg")"
+  scan_toml_name="${scan_url:-$scan_toml}"
   scan_toml_kind="none"
   entry='{}'
-  if [[ "$scan_toml" =~ ^https?:// ]]; then
-    scan_toml_kind="remote"
-  elif [ -n "$scan_toml" ]; then
+  if [ -n "$scan_toml" ]; then
     scan_toml_kind="file"
-    if [ ! -f "$scan_toml" ]; then
-      error "Package '$pkg' points [scan] configPath in Ballerina.toml to '$scan_toml', which does not exist."
-      continue
-    fi
-  fi
-  if [ "$scan_toml_kind" != none ]; then
+    [ -z "$scan_url" ] || scan_toml_kind="remote"
     if ! platforms="$(scan_toml_platforms "$scan_toml")"; then
-      error "Package '$pkg': could not read '$scan_toml' as TOML."
+      error "Package '$pkg': could not read '$scan_toml_name' as TOML."
       continue
     fi
     entry="$(jq -c 'map(select(.name == "sonarqube")) | first // {}' <<< "$platforms")"
@@ -114,23 +111,16 @@ while IFS= read -r unit; do
       "$(jq -r '."plugin-version" // "" | tostring' <<< "$SONAR")")"
   else
     entry_path="$(jq -r '.path // "" | tostring' <<< "$entry")"
-    if [ "$scan_toml_kind" = remote ]; then
-      # A remote Scan.toml cannot be changed, so its sonarqube entry is used as is.
-      if [ -n "$entry_path" ]; then
-        plugin='{"kind": "remote", "value": ""}'
-      else
-        error "Package '$pkg' reads a remote Scan.toml without a sonarqube [[platform]] entry. Set plugin-path or plugin-version under platform-config.sonarqube, or add the entry to the remote file."
-      fi
-    elif [ -z "$entry_path" ]; then
+    if [ -z "$entry_path" ]; then
       plugin="$(jq -nc --arg v "$PINNED_SONAR_PLUGIN_VERSION" '{kind: "version", value: $v}')"
     elif [[ "$entry_path" =~ ^https:// ]]; then
       plugin="$(jq -nc --arg v "$entry_path" '{kind: "url", value: $v}')"
     elif [[ "$entry_path" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml' has the path '$entry_path'. Use an https URL or a path relative to the package."
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the path '$entry_path'. Use an https URL or a path relative to the package."
     elif is_absolute_path "$entry_path"; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml' has the absolute path '$entry_path', which points to one machine. Use a path relative to the package, an https URL, or set plugin-version under platform-config.sonarqube."
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the absolute path '$entry_path', which points to one machine. Use a path relative to the package, an https URL, or set plugin-version under platform-config.sonarqube."
     elif [ ! -f "$pkg/$(to_unix_path "$entry_path")" ]; then
-      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml' has the path '$entry_path', which is not an existing file relative to the package."
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' has the path '$entry_path', which is not an existing file relative to the package."
     else
       plugin="$(jq -nc --arg v "$pkg/$(to_unix_path "$entry_path")" '{kind: "file", value: $v}')"
     fi
@@ -150,7 +140,7 @@ while IFS= read -r unit; do
     properties_file="$pkg/$(to_unix_path "$entry_properties")"
     is_absolute_path "$entry_properties" && properties_file="$(to_unix_path "$entry_properties")"
     if [ ! -f "$properties_file" ]; then
-      error "Package '$pkg': sonarProjectPropertiesPath in '$scan_toml' is '$entry_properties', which does not exist."
+      error "Package '$pkg': sonarProjectPropertiesPath in '$scan_toml_name' is '$entry_properties', which does not exist."
       continue
     fi
   elif [ -f "$pkg/sonar-project.properties" ]; then

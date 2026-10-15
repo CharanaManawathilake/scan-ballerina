@@ -9,8 +9,7 @@
 #
 # Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN (reads the plugin from GitHub Packages),
 # CATEGORY.
-# Writes: "plugin-file" into each item of $SCAN_WORK_DIR/sonarqube.json, empty for a remote
-# Scan.toml.
+# Writes: "plugin-file" into each item of $SCAN_WORK_DIR/sonarqube.json.
 # Outputs: scanner-bin, the directory to put on the path of the scan process.
 
 # shellcheck source=lib.sh
@@ -79,9 +78,9 @@ while IFS= read -r settings; do
     version) file="$(plugin_version_file "$value")" ;;
     url) file="$(plugin_url_file "$value")" ;;
     file) file="$ROOT/$value" ;;
-    *) file="" ;;
+    *) die "Package '$(jq -r '.package' <<< "$settings")' resolved to an unknown kind of platform plugin, '$kind'." ;;
   esac
-  [ -z "$file" ] || echo "$(jq -r '.package' <<< "$settings"): $file"
+  echo "$(jq -r '.package' <<< "$settings"): $file"
   UPDATED="$(jq -c --argjson s "$settings" --arg f "$file" '. + [$s + {"plugin-file": $f}]' <<< "$UPDATED")"
 done < <(jq -c '.[]' "$WORK/sonarqube.json")
 printf '%s\n' "$UPDATED" > "$WORK/sonarqube.json"

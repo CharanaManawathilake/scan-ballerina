@@ -149,8 +149,6 @@ Each setting of a package is resolved field by field: its `packages` item, then 
 - **Server and token:** an item that sets `host-url` must also set `token`, so a token is never sent to a server it was not configured for. Every URL must be `https`, including one from the properties file.
 - **Project:** each package is a separate SonarQube analysis, so packages on the same server need different project keys. `project-key` and `project-name` at the platform level are for a scan of one package, counted after `exclude-paths`: with more packages they fail, so set them for each package under `packages`. With one package, setting the same field at the platform level and in its item also fails.
 - **Workspaces:** SonarQube is not supported for workspaces yet, and a workspace in `paths` fails the step when `sonarqube` is selected. `bal scan` reports each member of a workspace in its own SonarScanner run, all with the one project key of the process, so each member's analysis would replace the previous one. List the member packages in `paths` and leave the workspace out with `exclude-paths`. Workspaces are fully supported for the SARIF file.
-- **Remote `Scan.toml`:** a package whose `[scan] configPath` in `Ballerina.toml` is a URL reads a `Scan.toml` the action cannot change, so its `sonarqube` `[[platform]]` entry is used as is, and `plugin-path` or `plugin-version` is needed when it has none. The action also cannot hide the remote file's `[[platform]]` entries for the SARIF scan, so `bal scan` writes no SARIF report for such a package and its scan fails. Use a local `Scan.toml` to get both.
-
 The platform plugin is published to GitHub Packages, which needs a token with `read:packages` even for public packages. Give the job `packages: read`, or set `plugin-path` to a JAR in the repository or an `https` URL.
 
 The action passes the settings to SonarScanner through the `SONAR_HOST_URL`, `SONAR_TOKEN` and `SONAR_SCANNER_JSON_PARAMS` environment variables of each package's `bal scan` process, never on the command line. SonarScanner gives them precedence over the properties file, and keeps the file's other settings.
@@ -158,6 +156,20 @@ The action passes the settings to SonarScanner through the `SONAR_HOST_URL`, `SO
 Pull requests from forks or Dependabot get no secrets and a read-only `GITHUB_TOKEN` in `pull_request` runs. In such a run, the action skips SonarQube with a warning when a token is empty, skips the upload to code scanning with a warning, and still produces the SARIF file. Save it with `artifacts: true` and upload it from a trusted `workflow_run` workflow.
 
 SonarQube receives each package's findings before the `exclude-tests` and `exclude-paths` filters are applied. Use `sonar.exclusions` and `sonar.test.inclusions` to keep the same files out of SonarQube.
+
+## `Scan.toml`
+
+`bal scan` reads each package's settings from `Scan.toml` in the package root, or from the file that `[scan] configPath` in `Ballerina.toml` names. Each workspace member reads its own. The action changes that file during a scan: it hides the `[[platform]]` entries for the SARIF scan, since `bal scan` writes no SARIF report while any is active, and points the `sonarqube` entry to the platform plugin for the SonarQube scan. It then restores the file byte for byte.
+
+When `configPath` is an `https` URL, the action downloads the file once, right after packages are found. A remote file cannot be changed, so for each scan the action writes a changed copy to its work directory and points `configPath` in `Ballerina.toml` to it, then restores `Ballerina.toml` byte for byte. Only a `configPath = "..."` line under the `[scan]` table is changed. `bal scan` reads the copy, so it does not download the file again.
+
+Whatever platforms are selected, the step fails after packages are found, before the tools are downloaded, when a package:
+
+- sets `configPath` to an `http` or other non-`https` URL. The scan tool loads the platform plugin JAR of each `[[platform]]` entry, so the file must not be changed in transit.
+- sets `configPath` to an `https` URL that cannot be downloaded, or that is not valid TOML.
+- sets `configPath` in a form the action cannot change, such as an inline table. Write it as a `configPath = "..."` line under `[scan]`.
+- sets `configPath` to a file that does not exist, which `bal scan` would try to download as a URL.
+- has a `[scan]` table without `configPath`, which `bal scan` rejects.
 
 ## Outputs
 
@@ -192,7 +204,7 @@ Findings never fail the step unless you set `fail-on-severity`. Problems with th
 | Missing or invalid SonarQube settings, missing or duplicate project keys, a `packages` item that matches no package or repeats a path, or a workspace with `sonarqube` | Fails after packages are found, before anything is downloaded |
 | No package found | Passes with a warning, result `skipped` |
 | `bal scan` fails for a package, including when SonarQube is unreachable or rejects the analysis | The other packages are still scanned, then the step fails without a SARIF file |
-| A package reads a remote `Scan.toml` with `[[platform]]` entries | Warns that the entries cannot be hidden. `bal scan` writes no SARIF report for the package, so it fails as above |
+| A package reads its `Scan.toml` from a non-`https` URL, an `https` URL that cannot be downloaded, or a missing file, or has a `[scan]` table without `configPath`, with any platforms | Fails after packages are found, before the tools are downloaded. See [`Scan.toml`](#scantoml) |
 | Upload to code scanning fails | Fails, after the SARIF file is written |
 | Saving the artifact fails, such as when another scan in the run used the same `category` | Fails, after the findings are uploaded |
 | Findings over the gate | Fails, after the SARIF file is written and uploaded |
@@ -204,7 +216,7 @@ Findings never fail the step unless you set `fail-on-severity`. Problems with th
 The action is a composite action. Its logic is in the shell and `jq` scripts in [`scripts/`](scripts), which read their inputs from environment variables and can be run locally:
 
 1. `validate.sh` checks the inputs.
-2. `find-packages.sh` finds the packages and workspaces in `paths`, skipping `target`, `build` and `.git`. A workspace is scanned once from its root.
+2. `find-packages.sh` finds the packages and workspaces in `paths`, skipping `target`, `build` and `.git`. A workspace is scanned once from its root. It checks each package's `Scan.toml` setting, and downloads a remote `Scan.toml`.
 3. `check-sonarqube.sh` resolves each package's SonarQube settings.
 4. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) installs Ballerina, unless `bal` is already on the path.
 5. `install-scan-tool.sh` installs the scan tool, unless that version is already active. With SonarQube, `install-sonarqube.sh` downloads the platform plugin and the SonarScanner CLI, once per job.
@@ -216,7 +228,7 @@ The action is a composite action. Its logic is in the shell and `jq` scripts in 
 
 The scan tool does not write a SARIF report while any `[[platform]]` entry in `Scan.toml` is active. When a package's `Scan.toml` has such entries, `scan.sh` hides them, with their sub-tables, during the SARIF scan only, and restores the file byte for byte as soon as that scan ends, including when it fails.
 
-The scan tool reads the platform plugin only from `Scan.toml`. For the SonarQube scan, `scan.sh` points the package's `sonarqube` `[[platform]]` entry to the resolved plugin, keeping the rest of the file, or creates a `Scan.toml` when the package has none. The file is restored, or deleted, as soon as that scan ends. So are the `ballerina-static-code-analysis-results.json` file the platform plugin writes in the package and the `.scannerwork` directory of SonarScanner, unless they were there before the scan. A remote `Scan.toml`, set with `[scan] configPath` in `Ballerina.toml`, cannot be changed, so its `sonarqube` entry is used as is. See [`sonarqube`](#sonarqube).
+The scan tool reads the platform plugin only from `Scan.toml`. For the SonarQube scan, `scan.sh` points the package's `sonarqube` `[[platform]]` entry to the resolved plugin, keeping the rest of the file, or creates a `Scan.toml` when the package has none. The file is restored, or deleted, as soon as that scan ends. So are the `ballerina-static-code-analysis-results.json` file the platform plugin writes in the package and the `.scannerwork` directory of SonarScanner, unless they were there before the scan.
 
 The platform plugin does not fail `bal scan` when SonarScanner fails. `scan.sh` counts a SonarQube scan as successful only when `bal scan` succeeds and SonarScanner writes `report-task.txt`, which it does once the server has accepted the analysis.
 
