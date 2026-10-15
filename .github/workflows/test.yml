@@ -1107,4 +1107,9 @@ jobs:
               'any(.[]; .title == $c and .annotation_level == "failure" and (.message | contains($m)))' \
               <<< "$ANNOTATIONS" > /dev/null || fail "$id: no error containing: $message"
           done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$EXPECTED")
+          # An item that matches no package is reported once, not also as setting project-key twice.
+          if jq -e 'any(.[]; .title == "bal scan (unmatched-package)" and (.message | contains("is set at the platform level")))' \
+            <<< "$ANNOTATIONS" > /dev/null; then
+            fail "unmatched-package: an item that matches no package must not be reported as setting project-key twice"
+          fi
           [ "$FAILURES" -eq 0 ] || exit 1

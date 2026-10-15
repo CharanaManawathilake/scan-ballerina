@@ -34,7 +34,8 @@ done < <(jq -r '.[].path' <<< "$ITEMS")
 
 # The platform-level project-key and project-name are for a scan of one package. With more
 # packages they would name one project for all of them, so each package sets its own under
-# packages. With one package, a field set both there and in the package's item is an error.
+# packages. With one package, a field set both there and in the package's item is an error. Items
+# that match no scanned package are reported above, so they are left out here.
 UNIT_COUNT="$(jq 'length' <<< "$UNITS")"
 for field in project-key project-name; do
   jq -e --arg f "$field" 'has($f)' <<< "$SONAR" > /dev/null || continue
@@ -43,7 +44,8 @@ for field in project-key project-name; do
   else
     while IFS= read -r path; do
       error "platform-config.sonarqube.$field is set at the platform level and in the packages item '$path'. Set it in one place."
-    done < <(jq -r --arg f "$field" '.[] | select(has($f)) | .path' <<< "$ITEMS")
+    done < <(jq -r --arg f "$field" --argjson units "$UNITS" \
+      '.[] | select(has($f)) | .path as $p | select(any($units[]; .path == $p)) | $p' <<< "$ITEMS")
   fi
 done
 
