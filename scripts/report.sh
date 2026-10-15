@@ -109,7 +109,7 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
         (if has("github-code-scanning") then "- Uploaded to GitHub code scanning." else empty end),
         (.sonarqube[]? | "- Reported \(.package) to SonarQube project `\(."project-key")`"
           + (if ."dashboard-url" != "" then ": [dashboard](\(."dashboard-url"))" else "" end) + "."),
-        (.artifact // empty | "- Saved the reports as the artifact "
+        (.artifact // empty | "- Saved the SARIF file as the artifact "
           + (if .url != "" then "[`\(.name)`](\(.url))" else "`\(.name)`" end) + ".")
       ' <<< "$UPLOADS"
     fi
@@ -117,7 +117,7 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
       echo
     fi
     if [ "${GCS_SKIPPED:-false}" = "true" ]; then
-      echo "- The upload to GitHub code scanning was skipped: pull requests from forks or Dependabot get a read-only \`GITHUB_TOKEN\`. The SARIF file is kept as the \`sarif-file\` output, and \`artifacts: sarif\` saves it as an artifact."
+      echo "- The upload to GitHub code scanning was skipped: pull requests from forks or Dependabot get a read-only \`GITHUB_TOKEN\`. The SARIF file is kept as the \`sarif-file\` output, and \`artifacts: true\` saves it as an artifact."
     fi
     if [ "${SONARQUBE_SKIPPED:-false}" = "true" ]; then
       echo "- SonarQube was skipped: secrets are not available to pull requests from forks or Dependabot."

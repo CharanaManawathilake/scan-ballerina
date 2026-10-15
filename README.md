@@ -61,18 +61,15 @@ steps:
   - run: ./upload-to-defectdojo.sh "${{ steps.scan.outputs.sarif-file }}"
 ```
 
-### Save the reports as an artifact
+### Save the SARIF file as an artifact
 
 ```yaml
 - uses: ballerina-platform/scan-ballerina@v1
   with:
-    artifacts: sarif,ballerina
+    artifacts: true
 ```
 
-The action uploads one workflow artifact, named after `category`, with the reports you list:
-
-- `sarif`: the merged SARIF file, as `<category>.sarif`.
-- `ballerina`, or `json`, which is the same report: the JSON report `bal scan` writes for each package or workspace, as `<package path>/scan_results.json`. It takes a second `bal scan` run per package. These reports are as `bal scan` wrote them, so `exclude-tests` and file globs in `exclude-paths` are not applied.
+The action uploads the merged SARIF file as a workflow artifact named after `category`, holding `<category>.sarif`. It is the same file as the `sarif-file` output, so saving it takes no extra `bal scan` run.
 
 Artifact names are unique within a workflow run, so give each scan its own `category`, including each job of a matrix. Saving the artifact needs no extra permissions, so it also works in pull requests from forks.
 
@@ -105,7 +102,7 @@ The findings are uploaded before the gate is applied, so they reach the platform
 | `max-findings` | `0` | Findings at or above `fail-on-severity` allowed before the step fails. |
 | `annotations` | `false` | Show each counted finding as a file and line annotation. |
 | `job-summary` | `true` | Write the result and the high, medium and low counts to the job summary. |
-| `artifacts` | empty | Comma separated reports to save as a workflow artifact named after `category`: `sarif` for the merged SARIF file, `ballerina` or `json` (the same report) for the JSON report `bal scan` writes for each package. Empty saves nothing. See [Save the reports as an artifact](#save-the-reports-as-an-artifact). |
+| `artifacts` | `false` | Save the merged SARIF file as a workflow artifact named after `category`. See [Save the SARIF file as an artifact](#save-the-sarif-file-as-an-artifact). |
 | `platform-config` | empty | YAML mapping, keyed by platform, with the settings and credentials each selected platform needs. JSON is accepted. |
 | `github-token` | `github.token` | Token for installing Ballerina, downloading the SonarQube platform plugin from GitHub Packages and uploading to code scanning. |
 
@@ -156,7 +153,7 @@ The platform plugin is published to GitHub Packages, which needs a token with `r
 
 The action passes the settings to SonarScanner through the `SONAR_HOST_URL`, `SONAR_TOKEN` and `SONAR_SCANNER_JSON_PARAMS` environment variables of each package's `bal scan` process, never on the command line. SonarScanner gives them precedence over the properties file, and keeps the file's other settings.
 
-Pull requests from forks or Dependabot get no secrets and a read-only `GITHUB_TOKEN`. In such a run, the action skips SonarQube with a warning when a token is empty, skips the upload to code scanning with a warning, and still produces the SARIF file. Save it with `artifacts: sarif` and upload it from a trusted `workflow_run` workflow.
+Pull requests from forks or Dependabot get no secrets and a read-only `GITHUB_TOKEN`. In such a run, the action skips SonarQube with a warning when a token is empty, skips the upload to code scanning with a warning, and still produces the SARIF file. Save it with `artifacts: true` and upload it from a trusted `workflow_run` workflow.
 
 SonarQube receives each package's findings before the `exclude-tests` and `exclude-paths` filters are applied. Use `sonar.exclusions` and `sonar.test.inclusions` to keep the same files out of SonarQube.
 
@@ -168,7 +165,7 @@ SonarQube receives each package's findings before the `exclude-tests` and `exclu
 | `sarif-file` | The merged, normalized SARIF file. Empty when no package was found or a scan failed. |
 | `high-count`, `medium-count`, `low-count`, `total-count` | Counted findings, after the test and path filters. `total-count` does not include `INFO` findings. |
 | `packages-scanned` | Number of packages scanned. |
-| `uploads` | JSON object with one entry per platform the findings were sent to, and an `artifact` entry when reports were saved as an artifact, such as `{"github-code-scanning": {"sarif-id": "…"}, "sonarqube": [{"package": "…", "project-key": "…", "dashboard-url": "…", "task-id": "…"}], "artifact": {"name": "…", "id": "…", "url": "…"}}`. `{}` when nothing was uploaded. |
+| `uploads` | JSON object with one entry per platform the findings were sent to, and an `artifact` entry when the SARIF file was saved as an artifact, such as `{"github-code-scanning": {"sarif-id": "…"}, "sonarqube": [{"package": "…", "project-key": "…", "dashboard-url": "…", "task-id": "…"}], "artifact": {"name": "…", "id": "…", "url": "…"}}`. `{}` when nothing was uploaded. |
 
 Read a value from `uploads` with `fromJSON(steps.scan.outputs.uploads)['github-code-scanning']['sarif-id']`.
 
@@ -197,7 +194,7 @@ Findings never fail the step unless you set `fail-on-severity`. Problems with th
 | Saving the artifact fails, such as when another scan in the run used the same `category` | Fails, after the findings are uploaded |
 | Findings over the gate | Fails, after the SARIF file is written and uploaded |
 | Fork or Dependabot pull request with an empty SonarQube token | Skips SonarQube with a warning, and still produces the SARIF file |
-| Fork or Dependabot pull request with `github-code-scanning` | Skips the upload with a warning, and keeps the SARIF file as the `sarif-file` output and in the artifact, when `artifacts` has `sarif` |
+| Fork or Dependabot pull request with `github-code-scanning` | Skips the upload with a warning, and keeps the SARIF file as the `sarif-file` output and in the artifact, when `artifacts` is `true` |
 
 ## How it works
 
@@ -208,10 +205,10 @@ The action is a composite action. Its logic is in the shell and `jq` scripts in 
 3. `check-sonarqube.sh` resolves each package's SonarQube settings.
 4. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) installs Ballerina, unless `bal` is already on the path.
 5. `install-scan-tool.sh` installs the scan tool, unless that version is already active. With SonarQube, `install-sonarqube.sh` downloads the platform plugin and the SonarScanner CLI, once per job.
-6. `scan.sh` runs `bal scan --format=sarif` on each package, with `artifacts: ballerina` or `json` also `bal scan --format=json`, and with SonarQube `bal scan --platforms=sonarqube`.
+6. `scan.sh` runs `bal scan --format=sarif` on each package, and with SonarQube `bal scan --platforms=sonarqube`.
 7. `merge-sarif.sh` normalizes the paths, drops filtered findings and merges the reports into one run.
 8. `github/codeql-action/upload-sarif` uploads the SARIF file to code scanning.
-9. `collect-artifacts.sh` gathers the reports listed in `artifacts`, and `actions/upload-artifact` saves them, also when an earlier step failed.
+9. With `artifacts: true`, `actions/upload-artifact` saves the SARIF file, also when the upload to code scanning failed.
 10. `report.sh` writes the annotations and the job summary, and applies the gate.
 
 The scan tool does not write a SARIF report while any `[[platform]]` entry in `Scan.toml` is active. When a package's `Scan.toml` has such entries, `scan.sh` hides them during the SARIF and JSON scans only, and restores the file byte for byte as soon as that scan ends, including when it fails.
