@@ -4,12 +4,16 @@
 #
 # Inputs (environment): SCAN_WORK_DIR, CATEGORY, ANNOTATIONS, JOB_SUMMARY, FAIL_ON_SEVERITY,
 # MAX_FINDINGS, FAILED_STEP (the first step that failed, empty when none did), UNIT_COUNT,
-# PACKAGES_SCANNED, SARIF_FILE, HIGH, MEDIUM, LOW, SARIF_ID, ARTIFACT_NAME, ARTIFACT_ID,
-# ARTIFACT_URL, GCS_SKIPPED, SONARQUBE_SKIPPED.
-# Outputs: result, uploads.
+# PACKAGES_SCANNED, HIGH, MEDIUM, LOW, TOTAL, SARIF_ID, ARTIFACT_NAME, ARTIFACT_ID, ARTIFACT_URL,
+# GCS_SKIPPED, SONARQUBE_SKIPPED.
+# Outputs: result, uploads, high-count, medium-count, low-count, total-count, packages-scanned.
 
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+
+# GitHub shows at most this many annotations of each level (error, warning, notice) per step, and
+# drops the rest without a notice.
+ANNOTATION_LIMIT=10
 
 WORK="${SCAN_WORK_DIR:-}"
 CATEGORY="$(trim "${CATEGORY:-bal-scan}")"
@@ -20,6 +24,7 @@ MAX="$(trim "${MAX_FINDINGS:-0}")"
 # such as when the run was cancelled or timed out, which FAILED_STEP does not catch.
 COUNTED=false
 [ -n "${HIGH:-}" ] && [ -n "${MEDIUM:-}" ] && [ -n "${LOW:-}" ] && COUNTED=true
+COUNT_OUTPUTS=("${HIGH:-}" "${MEDIUM:-}" "${LOW:-}" "${TOTAL:-}" "${PACKAGES_SCANNED:-}")
 HIGH="${HIGH:-0}" MEDIUM="${MEDIUM:-0}" LOW="${LOW:-0}"
 
 # Uploads: one entry per platform the findings were sent to.
@@ -68,12 +73,41 @@ else
 fi
 set_output result "$RESULT"
 
-# Annotations on each counted finding.
+# Nothing was found to scan, so every count is 0. Otherwise the counts are passed on as the earlier
+# steps set them, which is empty when they did not finish.
+if [ "$RESULT" = skipped ]; then
+  COUNT_OUTPUTS=(0 0 0 0 0)
+fi
+set_output high-count "${COUNT_OUTPUTS[0]}"
+set_output medium-count "${COUNT_OUTPUTS[1]}"
+set_output low-count "${COUNT_OUTPUTS[2]}"
+set_output total-count "${COUNT_OUTPUTS[3]}"
+set_output packages-scanned "${COUNT_OUTPUTS[4]}"
+
+# Annotations on each counted finding, up to GitHub's limit for each level. The gate's errors and
+# the warning about the limit are annotations too, so they take their slots first.
+ANNOTATION_NOTE=""
 if [ "$(trim "${ANNOTATIONS:-false}")" = "true" ] && [ -n "$WORK" ] && [ -f "$WORK/findings.json" ] && [ -z "${FAILED_STEP:-}" ]; then
-  jq -r '.[] | [
-      ({"high": "error", "medium": "warning", "low": "notice"}[.severity]),
-      .file, (.line | tostring), ((."end-line" // .line) | tostring), .rule, .message
-    ] | @tsv' "$WORK/findings.json" \
+  HIGH_SLOTS=$ANNOTATION_LIMIT
+  MEDIUM_SLOTS=$ANNOTATION_LIMIT
+  LOW_SLOTS=$ANNOTATION_LIMIT
+  [ "$RESULT" = failed ] && HIGH_SLOTS=$((HIGH_SLOTS - ${#REASONS[@]}))
+  if [ "$HIGH" -gt "$HIGH_SLOTS" ] || [ "$MEDIUM" -gt "$MEDIUM_SLOTS" ] || [ "$LOW" -gt "$LOW_SLOTS" ]; then
+    MEDIUM_SLOTS=$((MEDIUM_SLOTS - 1))
+    min() { echo $(($1 < $2 ? $1 : $2)); }
+    SHOWN=$(($(min "$HIGH" "$HIGH_SLOTS") + $(min "$MEDIUM" "$MEDIUM_SLOTS") + $(min "$LOW" "$LOW_SLOTS")))
+    ANNOTATION_NOTE="Annotated $SHOWN of the $((HIGH + MEDIUM + LOW)) findings, since GitHub shows at most $ANNOTATION_LIMIT annotations of each level per step and 50 per job. The SARIF file and the platforms it was sent to have every finding."
+    log_warning "$ANNOTATION_NOTE"
+  fi
+  jq -r --argjson slots "{\"high\": $HIGH_SLOTS, \"medium\": $MEDIUM_SLOTS, \"low\": $LOW_SLOTS}" '
+      . as $all
+      | ("high", "medium", "low") as $s
+      | [$all[] | select(.severity == $s)][:$slots[$s]][]
+      | [
+          ({"high": "error", "medium": "warning", "low": "notice"}[.severity]),
+          .file, (.line | tostring), ((."end-line" // .line) | tostring), .rule, .message
+        ]
+      | @tsv' "$WORK/findings.json" \
     | while IFS=$'\t' read -r level file line end_line rule message; do
         echo "::$level file=$(escape_property "$file"),line=$line,endLine=$end_line,title=$(escape_property "$rule")::$(escape_data "$message")"
       done
@@ -104,6 +138,10 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
       echo "Packages scanned: ${PACKAGES_SCANNED:-0}."
       echo
       echo "Gate: $GATE."
+      if [ -n "$ANNOTATION_NOTE" ]; then
+        echo
+        echo "$ANNOTATION_NOTE"
+      fi
     fi
     if [ "$(jq 'length' <<< "$UPLOADS")" -gt 0 ]; then
       echo

@@ -10,13 +10,15 @@
 #     to SonarScanner as environment variables of that process only, and the installed
 #     SonarScanner on its path. The scan tool reads the platform plugin only from Scan.toml, so
 #     its sonarqube [[platform]] entry points to the resolved plugin for this pass only: the file
-#     is restored, or deleted when the action created it, as soon as the pass ends.
+#     is restored, or deleted when the action created it, as soon as the pass ends. So are the
+#     results file the platform plugin writes and the .scannerwork directory of SonarScanner.
 # A failing unit does not stop the others, so every failure is reported; the step then fails.
 #
 # Inputs (environment): SCAN_WORK_DIR, SONARQUBE, PLATFORM_CONFIG, SCANNER_BIN, INCLUDE_RULES,
 # EXCLUDE_RULES, CATEGORY.
 # Writes: $SCAN_WORK_DIR/reports/<index>.sarif per unit, in the order of units.json, and
 # $SCAN_WORK_DIR/sonarqube-uploads.json.
+# Outputs: packages, the number of packages scanned, when every unit was scanned.
 
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -46,80 +48,105 @@ sonar_token() {
     | $item.token // .token // "" | tostring' <<< "$SONAR"
 }
 
-# Scan.toml files changed for one pass, as "original<TAB>backup" lines. An empty backup means
-# the action created the file, which is deleted.
-BACKUPS="$WORK/scan-toml-backups.tsv"
+# Paths changed or created during one pass, as "path<TAB>backup" lines. An empty backup means the
+# path did not exist before the pass, so it is deleted.
+BACKUPS="$WORK/backups.tsv"
 : > "$BACKUPS"
-restore_scan_tomls() {
+restore_files() {
   local original backup
   while IFS=$'\t' read -r original backup; do
     [ -n "$original" ] || continue
     if [ -n "$backup" ]; then
       cp "$backup" "$original" && rm -f "$backup"
     else
-      rm -f "$original"
+      rm -rf "$original"
     fi
   done < "$BACKUPS"
   : > "$BACKUPS"
 }
-trap restore_scan_tomls EXIT INT TERM
+trap restore_files EXIT INT TERM
+
+# Keeps a path as it is now until restore_files runs: an existing file is copied to the work
+# directory and copied back byte for byte, and a path that does not exist yet is deleted. An
+# existing directory is left as it is.
+protect() {
+  local path="$1" backup=""
+  [ -d "$path" ] && return 0
+  if [ -e "$path" ]; then
+    backup="$(mktemp "$WORK/backup.XXXXXX")"
+    cp "$path" "$backup"
+  fi
+  printf '%s\t%s\n' "$path" "$backup" >> "$BACKUPS"
+}
+
+# Prints a Scan.toml without its [[platform]] entries: all of them with "all", or only the
+# sonarqube ones with "sonarqube". An entry runs until the next table header that is not one of
+# its sub-tables, such as [platform.<name>], so a removed entry takes its sub-tables with it.
+drop_platforms() {
+  awk -v mode="$1" '
+    function flush() { if (!drop) printf "%s", buf; buf = ""; drop = 0; inplat = 0 }
+    /^[[:space:]]*\[/ {
+      if ($0 ~ /^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]/) {
+        if (inplat) flush()
+        inplat = 1; insub = 0; drop = (mode == "all")
+      } else if ($0 ~ /^[[:space:]]*\[\[?[[:space:]]*platform[[:space:]]*\./) {
+        if (!inplat) { inplat = 1; drop = (mode == "all") }
+        insub = 1
+      } else if (inplat) {
+        flush()
+      }
+    }
+    inplat {
+      buf = buf $0 "\n"
+      if (!insub && mode == "sonarqube" && $0 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*["\047]sonarqube["\047]/) drop = 1
+      next
+    }
+    { print }
+    END { if (inplat) flush() }
+  '
+}
 
 # Points the sonarqube [[platform]] entry of a package's Scan.toml to the resolved plugin JAR until
-# restore_scan_tomls runs. The other entries and settings are kept. The properties file is passed
-# to SonarScanner through the environment instead, so the entry has no sonarProjectPropertiesPath.
+# restore_files runs. The other entries and settings are kept. The properties file is passed to
+# SonarScanner through the environment instead, so the entry has no sonarProjectPropertiesPath.
 use_plugin() {
-  local settings="$1" file kind jar backup=""
+  local settings="$1" file kind jar tmp
   kind="$(jq -r '."scan-toml-kind"' <<< "$settings")"
   [ "$kind" != remote ] || return 0
   jar="$(to_native_path "$(jq -r '."plugin-file"' <<< "$settings")")"
   if [ "$kind" = file ]; then
     file="$(jq -r '."scan-toml"' <<< "$settings")"
-    backup="$(mktemp "$WORK/Scan.toml.XXXXXX")"
-    cp "$file" "$backup"
   else
     file="$(jq -r '.package' <<< "$settings")/Scan.toml"
   fi
-  printf '%s\t%s\n' "$file" "$backup" >> "$BACKUPS"
-  {
-    if [ -n "$backup" ]; then
-      awk '
-        function flush() { if (!sonar) printf "%s", buf; buf = ""; sonar = 0 }
-        /^[[:space:]]*\[/ { if (inplat) flush(); inplat = ($0 ~ /^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]/) }
-        inplat {
-          buf = buf $0 "\n"
-          if ($0 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*["\047]sonarqube["\047]/) sonar = 1
-          next
-        }
-        { print }
-        END { if (inplat) flush() }
-      ' "$backup"
-      echo
-    fi
-    printf '[[platform]]\nname = "sonarqube"\npath = "%s"\n' "$jar"
-  } > "$file"
+  protect "$file"
+  tmp="$(mktemp "$WORK/Scan.toml.XXXXXX")"
+  if [ "$kind" = file ]; then
+    drop_platforms sonarqube < "$file" > "$tmp"
+    echo >> "$tmp"
+  fi
+  printf '[[platform]]\nname = "sonarqube"\npath = "%s"\n' "$jar" >> "$tmp"
+  cp "$tmp" "$file"
+  rm -f "$tmp"
 }
 
-# Hides the [[platform]] entries of a package's Scan.toml until restore_scan_tomls runs.
+# Hides the [[platform]] entries of a package's Scan.toml until restore_files runs.
 hide_platforms() {
-  local pkg="$1" file
+  local pkg="$1" file tmp
   file="$(scan_toml_path "$pkg")"
   [ -n "$file" ] || return 0
   if [[ "$file" =~ ^https?:// ]]; then
     if [ "$(scan_toml_platforms "$file" | jq 'length' 2> /dev/null || echo 0)" -gt 0 ]; then
-      log_warning "Package '$pkg' reads a remote Scan.toml with [[platform]] entries, which stop bal scan from writing a SARIF report."
+      log_warning "Package '$pkg' reads a remote Scan.toml with [[platform]] entries, which the action cannot hide, so bal scan writes no SARIF report for it."
     fi
     return 0
   fi
   [ -f "$file" ] && grep -Eq '^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]' "$file" || return 0
-  local backup
-  backup="$(mktemp "$WORK/Scan.toml.XXXXXX")"
-  cp "$file" "$backup"
-  printf '%s\t%s\n' "$file" "$backup" >> "$BACKUPS"
-  awk '
-    /^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]/ { skip = 1; next }
-    /^[[:space:]]*\[/ { skip = 0 }
-    !skip
-  ' "$backup" > "$file"
+  protect "$file"
+  tmp="$(mktemp "$WORK/Scan.toml.XXXXXX")"
+  drop_platforms all < "$file" > "$tmp"
+  cp "$tmp" "$file"
+  rm -f "$tmp"
 }
 
 # Runs bal scan in a directory and keeps its output in a log file. Returns its exit code.
@@ -156,7 +183,7 @@ while IFS= read -r unit; do
 
   status=0
   run_bal_scan "$path" "$WORK/logs/scan-$idx.log" --format=sarif "${RULE_ARGS[@]+"${RULE_ARGS[@]}"}" || status=$?
-  restore_scan_tomls
+  restore_files
 
   # bal scan reports some errors, such as an invalid Scan.toml, without a failing exit code.
   if [ "$status" -ne 0 ]; then
@@ -171,7 +198,18 @@ while IFS= read -r unit; do
   if [ "${SONARQUBE:-false}" = "true" ]; then
     settings="$(jq -c --arg p "$path" 'map(select(.package == $p)) | first' "$WORK/sonarqube.json")"
     echo "::group::bal scan $path (report to SonarQube project $(jq -r '."project-key"' <<< "$settings"))"
-    task_file="$path/.scannerwork/report-task.txt"
+    properties_file="$(jq -r '."properties-file"' <<< "$settings")"
+    # SonarScanner runs from the package directory and keeps its files in .scannerwork under the
+    # project base directory, which the properties file can move.
+    base_dir="$path"
+    base_prop="$(read_property "$properties_file" sonar.projectBaseDir)"
+    if [ -n "$base_prop" ]; then
+      base_dir="$path/$(to_unix_path "$base_prop")"
+      is_absolute_path "$base_prop" && base_dir="$(to_unix_path "$base_prop")"
+    fi
+    task_file="$base_dir/.scannerwork/report-task.txt"
+    protect "$base_dir/.scannerwork"
+    protect "$path/ballerina-static-code-analysis-results.json"
     rm -f "$task_file"
     log="$WORK/logs/sonarqube-$idx.log"
     # SonarScanner gives these environment settings precedence over the properties file.
@@ -181,7 +219,7 @@ while IFS= read -r unit; do
     user_params="$(jq -c 'objects' <<< "${SONAR_SCANNER_JSON_PARAMS:-}" 2> /dev/null || true)"
     [ -n "$user_params" ] || user_params='{}'
     params="$(jq -c \
-      --arg settings "$(to_native_path "$(jq -r '."properties-file"' <<< "$settings")")" \
+      --arg settings "$(to_native_path "$properties_file")" \
       --arg results "$(to_native_path "$ROOT/$path/ballerina-static-code-analysis-results.json")" \
       --argjson user "$user_params" \
       '$user + {"sonar.projectKey": ."project-key", analyzedResultsPath: $results}
@@ -195,15 +233,17 @@ while IFS= read -r unit; do
       SONAR_TOKEN="$(sonar_token "$path")" \
       SONAR_SCANNER_JSON_PARAMS="$params" \
       run_bal_scan "$path" "$log" --platforms=sonarqube "${RULE_ARGS[@]+"${RULE_ARGS[@]}"}" || status=$?
-    restore_scan_tomls
-    # The platform plugin prints the outcome of SonarScanner but does not fail bal scan.
+    # The platform plugin does not fail bal scan when SonarScanner fails. SonarScanner writes
+    # report-task.txt, with the ID of the server's background task, only once the server has
+    # accepted the analysis, so that file decides. It is read before .scannerwork is removed.
+    task_id="$(read_property "$task_file" ceTaskId)"
+    dashboard="$(read_property "$task_file" dashboardUrl | sed 's/\\:/:/g')"
+    restore_files
     if [ "$status" -ne 0 ]; then
       FAILED+=("$path: reporting to SonarQube failed, bal scan exited with code $status")
-    elif ! grep -q 'Reporting successful!' "$log"; then
-      FAILED+=("$path: reporting to SonarQube failed. See the SonarScanner output above")
+    elif [ -z "$task_id" ]; then
+      FAILED+=("$path: reporting to SonarQube failed, since SonarScanner did not submit the analysis. See the SonarScanner output above")
     else
-      dashboard="$(read_property "$task_file" dashboardUrl | sed 's/\\:/:/g')"
-      task_id="$(read_property "$task_file" ceTaskId)"
       jq -nc --argjson s "$settings" --arg url "$dashboard" --arg task "$task_id" \
         '{package: $s.package, "project-key": $s."project-key", "dashboard-url": $url, "task-id": $task}' \
         >> "$WORK/sonarqube-uploads.jsonl"
@@ -218,3 +258,6 @@ if [ "${#FAILED[@]}" -gt 0 ]; then
   for f in "${FAILED[@]}"; do log_error "$f."; done
   die "bal scan failed for ${#FAILED[@]} of $INDEX package(s), so no SARIF file was produced."
 fi
+
+# A workspace counts as the packages it holds.
+set_output packages "$(jq '[.[] | if .kind == "workspace" then (.members | length) else 1 end] | add // 0' "$WORK/units.json")"

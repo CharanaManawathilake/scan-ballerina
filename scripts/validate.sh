@@ -63,7 +63,7 @@ done < <(split_list "${SCAN_PATHS:-.}")
 [ "$PATH_COUNT" -gt 0 ] || error "paths must name at least one path."
 
 while IFS= read -r p; do
-  [[ "$p" = /* ]] && error "exclude-paths has '$p'. Give globs relative to the repository root."
+  is_absolute_path "$p" && error "exclude-paths has '$p'. Give globs relative to the repository root."
 done < <(split_list "${EXCLUDE_PATHS:-}")
 
 # Rules. bal scan rejects include and exclude rules together without writing a report.
@@ -164,9 +164,10 @@ if jq -e 'has("github-code-scanning") and (.["github-code-scanning"] // {} | len
   error "platform-config.github-code-scanning takes no settings. It uses the github-token and category inputs."
 fi
 
-# Pull requests from forks or from Dependabot get no secrets and a read-only GITHUB_TOKEN.
+# Pull requests from forks or from Dependabot get no secrets and a read-only GITHUB_TOKEN. This
+# holds for the pull_request event only: pull_request_target runs in the base repository.
 RESTRICTED=false
-if [[ "${GITHUB_EVENT_NAME:-}" == pull_request* ]]; then
+if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   if [ "${GITHUB_ACTOR:-}" = "dependabot[bot]" ]; then
     RESTRICTED=true
   elif [ -f "${GITHUB_EVENT_PATH:-}" ] && jq -e \
@@ -235,6 +236,10 @@ fi
 TEMP_ROOT="$(to_unix_path "${RUNNER_TEMP:-${TMPDIR:-/tmp}}")"
 SAFE_CATEGORY="$(tr -c 'A-Za-z0-9._-' '_' <<< "$(trim "${CATEGORY-bal-scan}")" | sed 's/_$//')"
 WORK="$(mktemp -d "$TEMP_ROOT/scan-ballerina-$SAFE_CATEGORY-XXXXXX")"
+# Artifact names keep the category as given, apart from the characters upload-artifact rejects, so
+# that categories such as "a b" and "a_b" get different artifacts.
+ARTIFACT_NAME="$(trim "${CATEGORY-bal-scan}")"
+for c in '"' ':' '<' '>' '|' '*' '?' '\' '/' $'\r' $'\n'; do ARTIFACT_NAME="${ARTIFACT_NAME//"$c"/_}"; done
 mkdir -p "$WORK/reports" "$WORK/logs"
 
 set_output work-dir "$WORK"
@@ -243,6 +248,6 @@ set_output github-code-scanning-skipped "$GCS_SKIPPED"
 set_output sonarqube "$SONARQUBE"
 set_output sonarqube-skipped "$(selected sonarqube && [ "$SONARQUBE" = false ] && echo true || echo false)"
 set_output artifacts "$ARTIFACTS"
-set_output artifact-name "$SAFE_CATEGORY"
+set_output artifact-name "$ARTIFACT_NAME"
 echo "Platforms: ${SELECTED[*]:-none (SARIF file only)}"
-[ "$ARTIFACTS" = false ] || echo "Artifact: '$SAFE_CATEGORY', with the merged SARIF file"
+[ "$ARTIFACTS" = false ] || echo "Artifact: '$ARTIFACT_NAME', with the merged SARIF file"

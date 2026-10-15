@@ -1027,7 +1027,9 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-platform-project-key-*)"
           jq . "$WORK/sonarqube.json"
-          [ "$PACKAGES" = 1 ] || fail "packages-scanned is '$PACKAGES', expected 1 after exclude-paths"
+          # The SonarQube scan fails, so no package counts as scanned. sonarqube.json shows that
+          # exclude-paths left one package.
+          [ -z "$PACKAGES" ] || fail "packages-scanned is '$PACKAGES', expected empty since the scan failed"
           jq -e 'length == 1 and (.[0] | .package == "test/projects/multi/orders"
               and ."project-key" == "orders" and ."project-name" == "Orders Service")' \
             "$WORK/sonarqube.json" > /dev/null || fail "orders must take the platform-level key and the name from its item"
@@ -1035,6 +1037,83 @@ jobs:
           grep -q 'SonarScanner CLI' "$WORK/logs/sonarqube-0.log" || fail "The plugin did not run SonarScanner"
           [ "$OUTCOME" = failure ] || fail "The step should fail, since the server does not exist, but its outcome is '$OUTCOME'"
           [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+
+  # The packages in test/restore have Scan.toml files with [[platform]] entries, sub-tables, odd
+  # spacing and no final newline, which the action changes for a scan and must restore byte for
+  # byte when that scan fails.
+  scan-toml-restore:
+    name: Scan.toml restored after a failed scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record the Scan.toml files
+        shell: bash
+        run: sha256sum test/restore/*/Scan.toml | tee "$RUNNER_TEMP/scan-toml.sha256"
+
+      # The package does not compile, so the SARIF scan fails while its [[platform]] entries are
+      # hidden.
+      - name: Failed SARIF scan
+        id: sarif-failure
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/restore/sarif-failure
+          category: sarif-failure
+
+      # The SARIF scan passes, and the SonarQube scan fails on the dummy server while the sonarqube
+      # entry points to the pinned plugin.
+      - name: Failed SonarQube scan
+        id: sonarqube-failure
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/restore/sonarqube-failure
+          category: sonarqube-failure
+          platforms: sonarqube
+          platform-config: |
+            sonarqube:
+              plugin-version: 0.3.0
+              host-url: https://sonarqube.example.invalid
+              token: dummy-token
+              project-key: restore
+
+      - name: Check that the files were restored
+        shell: bash
+        env:
+          SARIF_OUTCOME: ${{ steps.sarif-failure.outcome }}
+          SARIF_RESULT: ${{ steps.sarif-failure.outputs.result }}
+          SONARQUBE_OUTCOME: ${{ steps.sonarqube-failure.outcome }}
+          SONARQUBE_RESULT: ${{ steps.sonarqube-failure.outputs.result }}
+        run: |
+          set -euo pipefail
+          FAILURES=0
+          fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
+
+          SARIF_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-sarif-failure-*)"
+          [ "$SARIF_OUTCOME" = failure ] && [ "$SARIF_RESULT" = error ] \
+            || fail "sarif-failure: expected the step to fail with result error, got '$SARIF_OUTCOME' and '$SARIF_RESULT'"
+          grep -q 'compilation contains errors' "$SARIF_WORK/logs/scan-0.log" \
+            || fail "sarif-failure: the SARIF scan must fail on the compilation error"
+
+          SONARQUBE_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-sonarqube-failure-*)"
+          [ "$SONARQUBE_OUTCOME" = failure ] && [ "$SONARQUBE_RESULT" = error ] \
+            || fail "sonarqube-failure: expected the step to fail with result error, got '$SONARQUBE_OUTCOME' and '$SONARQUBE_RESULT'"
+          [ -f "$SONARQUBE_WORK/reports/0.sarif" ] || fail "sonarqube-failure: the SARIF scan must pass"
+          grep -q 'SonarScanner CLI' "$SONARQUBE_WORK/logs/sonarqube-0.log" \
+            || fail "sonarqube-failure: the SonarQube scan must load the plugin from Scan.toml and run SonarScanner"
+
+          sha256sum -c "$RUNNER_TEMP/scan-toml.sha256" || fail "Scan.toml must be restored byte for byte"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scans left changes in test: $(git status --porcelain -- test)"
+          # .gitignore hides what SonarScanner and the platform plugin write, so look for it directly.
+          for f in .scannerwork ballerina-static-code-analysis-results.json; do
+            [ ! -e "test/restore/sonarqube-failure/$f" ] || fail "sonarqube-failure: $f must be deleted after the SonarQube scan"
+          done
+          [ "$FAILURES" -eq 0 ] || exit 1
 
   # Annotations reach the check run only after the job that wrote them has finished, so they are
   # checked from this job.

@@ -8,7 +8,7 @@
 # Inputs (environment): SCAN_WORK_DIR, SCAN_PATHS, EXCLUDE_PATHS, CATEGORY.
 # Writes: $SCAN_WORK_DIR/units.json, a list of {path, kind, members}, with paths relative to
 # the repository root.
-# Outputs: count (units to scan), packages (packages they hold).
+# Outputs: count (units to scan).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -58,4 +58,3 @@ else
   jq -r '.[] | "  \(.path)\(if .kind == "workspace" then " (workspace)" else "" end)"' <<< "$UNITS"
 fi
 set_output count "$COUNT"
-set_output packages "$(jq '[.[] | if .kind == "workspace" then (.members | length) else 1 end] | add // 0' <<< "$UNITS")"

@@ -1,0 +1,11 @@
+# The action points the sonarqube entry to the resolved plugin for the SonarQube scan, and must
+# restore this file byte for byte. The sub-table belongs to the sonarqube entry and goes with it.
+[rule]
+exclude = ["ballerina:10"]
+
+[[platform]]
+name = "sonarqube"
+path = "./sonar-platform-plugin.jar"
+
+[platform.settings]
+mode = "strict"

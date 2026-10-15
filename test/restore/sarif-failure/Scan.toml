@@ -1,0 +1,11 @@
+# The action hides these entries for the SARIF scan and must restore this file byte for byte.
+[[platform]]
+name = "other"
+path = "./other-platform.jar"
+
+[platform.settings]
+mode = "strict"
+
+[[platform]]
+name   =   "sonarqube"
+path = "./sonar-platform-plugin.jar"

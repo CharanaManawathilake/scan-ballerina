@@ -79,20 +79,20 @@ outputs:
     description: 'The merged, normalized SARIF file. Empty when no package was found or a scan failed.'
     value: ${{ steps.merge.outputs.sarif-file }}
   high-count:
-    description: 'Number of high severity findings.'
-    value: ${{ steps.merge.outputs.high-count }}
+    description: 'Number of high severity findings. 0 when no package was found, empty when the findings were not counted.'
+    value: ${{ steps.report.outputs.high-count }}
   medium-count:
-    description: 'Number of medium severity findings.'
-    value: ${{ steps.merge.outputs.medium-count }}
+    description: 'Number of medium severity findings. 0 when no package was found, empty when the findings were not counted.'
+    value: ${{ steps.report.outputs.medium-count }}
   low-count:
-    description: 'Number of low severity findings.'
-    value: ${{ steps.merge.outputs.low-count }}
+    description: 'Number of low severity findings. 0 when no package was found, empty when the findings were not counted.'
+    value: ${{ steps.report.outputs.low-count }}
   total-count:
-    description: 'Sum of the high, medium and low counts. INFO findings are not counted.'
-    value: ${{ steps.merge.outputs.total-count }}
+    description: 'Sum of the high, medium and low counts. INFO findings are not counted. 0 when no package was found, empty when the findings were not counted.'
+    value: ${{ steps.report.outputs.total-count }}
   packages-scanned:
-    description: 'Number of packages scanned.'
-    value: ${{ steps.find.outputs.packages }}
+    description: 'Number of packages scanned, set once every package was scanned. 0 when no package was found, empty when a scan failed or did not run.'
+    value: ${{ steps.report.outputs.packages-scanned }}
   uploads:
     description: 'JSON object with one entry per platform the findings were sent to, and an artifact entry when the SARIF file was saved as an artifact. {} when nothing was uploaded.'
     value: ${{ steps.report.outputs.uploads }}
@@ -240,7 +240,6 @@ runs:
             (steps.validate.outcome != 'success' && 'validate the inputs') ||
             (steps.find.outcome != 'success' && 'find packages') ||
             (steps.sonarqube.outcome == 'failure' && 'resolve the SonarQube settings') ||
-            (steps.bal.outcome == 'failure' && 'check for Ballerina') ||
             (steps.setup-ballerina.outcome == 'failure' && 'set up Ballerina') ||
             (steps.tool.outcome == 'failure' && 'install the scan tool') ||
             (steps.sonarqube-tools.outcome == 'failure' && 'install SonarScanner and the platform plugin') ||
@@ -251,10 +250,11 @@ runs:
             ''
           }}
         UNIT_COUNT: ${{ steps.find.outputs.count }}
-        PACKAGES_SCANNED: ${{ steps.find.outputs.packages }}
+        PACKAGES_SCANNED: ${{ steps.scan.outputs.packages }}
         HIGH: ${{ steps.merge.outputs.high-count }}
         MEDIUM: ${{ steps.merge.outputs.medium-count }}
         LOW: ${{ steps.merge.outputs.low-count }}
+        TOTAL: ${{ steps.merge.outputs.total-count }}
         SARIF_ID: ${{ steps.upload.outputs.sarif-id }}
         ARTIFACT_NAME: ${{ steps.validate.outputs.artifact-name }}
         ARTIFACT_ID: ${{ steps.artifact.outputs.artifact-id }}
