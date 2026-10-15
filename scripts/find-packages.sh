@@ -10,9 +10,9 @@
 # the repository root.
 # Outputs: count (units to scan), packages (packages they hold).
 
-ACTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
-source "$ACTION_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.sh"
 
 WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 ROOT="$(workspace_root)"
@@ -40,7 +40,7 @@ if [ "${#FOUND[@]}" -gt 0 ]; then
 fi
 
 EXCLUDES="$(split_list "${EXCLUDE_PATHS:-}" | jq -R . | jq -sc .)"
-UNITS="$(jq -c -L "$ACTION_DIR" --argjson excludes "$EXCLUDES" '
+UNITS="$(jq -c -L "$SCRIPT_DIR" --argjson excludes "$EXCLUDES" '
   include "common";
   ([.[] | select(.kind == "workspace") | .path as $ws | .members[] | join_path($ws; .)]) as $covered
   | map(select(

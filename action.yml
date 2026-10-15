@@ -120,7 +120,7 @@ runs:
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         BALLERINA_VERSION: ${{ inputs.ballerina-version }}
         TOOL_VERSION: ${{ inputs.tool-version }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/validate.sh"
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/validate.sh"
 
     - name: Find packages
       id: find
@@ -130,7 +130,7 @@ runs:
         SCAN_PATHS: ${{ inputs.paths }}
         EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
         CATEGORY: ${{ inputs.category }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/find-packages.sh"
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/find-packages.sh"
 
     - name: Resolve SonarQube settings
       id: sonarqube
@@ -140,7 +140,7 @@ runs:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         CATEGORY: ${{ inputs.category }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/check-sonarqube.sh"
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/check-sonarqube.sh"
 
     - name: Check for Ballerina
       id: bal
@@ -168,7 +168,7 @@ runs:
       env:
         TOOL_VERSION: ${{ inputs.tool-version }}
         CATEGORY: ${{ inputs.category }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/install-scan-tool.sh"
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-scan-tool.sh"
 
     - name: Install SonarScanner and the platform plugin
       id: sonarqube-tools
@@ -178,7 +178,7 @@ runs:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         GITHUB_TOKEN: ${{ inputs.github-token }}
         CATEGORY: ${{ inputs.category }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/install-sonarqube.sh"
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-sonarqube.sh"
 
     - name: Scan packages
       id: scan
@@ -193,7 +193,7 @@ runs:
         EXCLUDE_RULES: ${{ inputs.exclude-rules }}
         ARTIFACTS: ${{ steps.validate.outputs.artifacts }}
         CATEGORY: ${{ inputs.category }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/scan.sh"
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/scan.sh"
 
     - name: Normalize and merge SARIF
       id: merge
@@ -204,7 +204,7 @@ runs:
         EXCLUDE_TESTS: ${{ inputs.exclude-tests }}
         EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
         CATEGORY: ${{ inputs.category }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/merge-sarif.sh"
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/merge-sarif.sh"
 
     - name: Upload to GitHub code scanning
       id: upload
@@ -225,7 +225,7 @@ runs:
         ARTIFACTS: ${{ steps.validate.outputs.artifacts }}
         SARIF_FILE: ${{ steps.merge.outputs.sarif-file }}
         CATEGORY: ${{ inputs.category }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/collect-artifacts.sh"
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/collect-artifacts.sh"
 
     - name: Save the reports as an artifact
       id: artifact
@@ -274,4 +274,4 @@ runs:
         ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
         GCS_SKIPPED: ${{ steps.validate.outputs.github-code-scanning-skipped }}
         SONARQUBE_SKIPPED: ${{ steps.validate.outputs.sonarqube-skipped }}
-      run: bash "${GITHUB_ACTION_PATH//\\//}/report.sh"
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/report.sh"

@@ -1,4 +1,4 @@
-# jq definitions shared by the scan-ballerina scripts. Load with: jq -L <action dir> 'include "common"; ...'
+# jq definitions shared by the scan-ballerina scripts. Load with: jq -L <scripts dir> 'include "common"; ...'
 
 # Converts an exclude-paths glob into an anchored regex. "*" and "?" stay within one directory,
 # "**" crosses directories, and a match also covers everything below it.

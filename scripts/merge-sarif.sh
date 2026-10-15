@@ -5,9 +5,9 @@
 # Writes: the merged SARIF file and $SCAN_WORK_DIR/findings.json, the counted findings.
 # Outputs: sarif-file, high-count, medium-count, low-count, total-count.
 
-ACTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
-source "$ACTION_DIR/lib.sh"
+source "$SCRIPT_DIR/lib.sh"
 
 WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 EXCLUDES="$(split_list "${EXCLUDE_PATHS:-}" | jq -R . | jq -sc .)"
@@ -18,7 +18,7 @@ INDEX=0
 while IFS= read -r unit; do
   report="$WORK/reports/$INDEX.sarif"
   [ -f "$report" ] || die "The report of '$(jq -r '.path' <<< "$unit")' is missing from the work directory."
-  jq -L "$ACTION_DIR" -f "$ACTION_DIR/normalize-sarif.jq" \
+  jq -L "$SCRIPT_DIR" -f "$SCRIPT_DIR/normalize-sarif.jq" \
     --arg prefix "$(jq -r '.path' <<< "$unit")" \
     --argjson packages "$(jq -c 'if .kind == "workspace" then .members else [""] end' <<< "$unit")" \
     --argjson exclude_tests "$EXCLUDE_TESTS_JSON" \
@@ -31,9 +31,9 @@ SAFE_CATEGORY="$(tr -c 'A-Za-z0-9._-' '_' <<< "$(trim "${CATEGORY:-bal-scan}")" 
 SARIF="$WORK/$SAFE_CATEGORY.sarif"
 FILES=()
 for ((i = 0; i < INDEX; i++)); do FILES+=("$WORK/normalized/$i.sarif"); done
-jq -s -f "$ACTION_DIR/merge-sarif.jq" "${FILES[@]}" > "$SARIF"
+jq -s -f "$SCRIPT_DIR/merge-sarif.jq" "${FILES[@]}" > "$SARIF"
 
-jq -L "$ACTION_DIR" '
+jq -L "$SCRIPT_DIR" '
   include "common";
   .runs[0].tool.driver.rules as $rules
   | [.runs[0].results[] | {

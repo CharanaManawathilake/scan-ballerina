@@ -201,7 +201,7 @@ Findings never fail the step unless you set `fail-on-severity`. Problems with th
 
 ## How it works
 
-The action is a composite action. Its logic is in the shell and `jq` scripts next to `action.yml`, which read their inputs from environment variables and can be run locally:
+The action is a composite action. Its logic is in the shell and `jq` scripts in [`scripts/`](scripts), which read their inputs from environment variables and can be run locally:
 
 1. `validate.sh` checks the inputs.
 2. `find-packages.sh` finds the packages and workspaces in `paths`, skipping `target`, `build` and `.git`. A workspace is scanned once from its root.
