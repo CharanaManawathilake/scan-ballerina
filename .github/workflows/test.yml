@@ -34,6 +34,7 @@ jobs:
           ballerina-version: 2201.13.5
           tool-version: 0.12.0
           paths: test/projects/single
+          artifacts: sarif
 
       - name: Check the result
         shell: bash
@@ -67,6 +68,8 @@ jobs:
           ballerina-version: 2201.12.0
           tool-version: 0.12.0
           paths: test/projects/single
+          category: incompatible-versions
+          artifacts: sarif
 
       - name: Check that the step failed
         shell: bash
@@ -102,6 +105,7 @@ jobs:
           paths: test/projects/single
           platforms: github-code-scanning
           category: bal-scan-test
+          artifacts: sarif
 
       - name: Check the upload
         shell: bash
@@ -127,6 +131,8 @@ jobs:
         with:
           ballerina-version: 2201.13.5
           paths: test/projects/multi
+          category: single-path
+          artifacts: sarif
 
       - name: Check that only the given path was scanned
         shell: bash
@@ -158,6 +164,8 @@ jobs:
             test/projects/multi
             test/projects/services
           exclude-paths: test/projects/services/internal/legacy
+          category: exclude-paths
+          artifacts: sarif
 
       - name: Check that the excluded package was not scanned
         shell: bash
@@ -188,6 +196,7 @@ jobs:
           ballerina-version: 2201.13.5
           paths: test/projects/multi/orders
           category: orders
+          artifacts: sarif
 
       - name: Scan payments
         id: payments
@@ -195,6 +204,7 @@ jobs:
         with:
           paths: test/projects/multi/payments
           category: payments
+          artifacts: sarif
 
       - name: Check that each category has its own results
         shell: bash
@@ -234,6 +244,7 @@ jobs:
           ballerina-version: 2201.13.5
           paths: test/projects/single
           category: low-only
+          artifacts: sarif
           fail-on-severity: medium
 
       - name: Scan a package with a medium finding
@@ -243,6 +254,7 @@ jobs:
         with:
           paths: test/projects/secrets
           category: medium
+          artifacts: sarif
           fail-on-severity: medium
 
       - name: Check the gate
@@ -282,7 +294,9 @@ jobs:
         with:
           ballerina-version: 2201.13.5
           paths: test/projects/single
+          category: max-findings
           max-findings: 1
+          artifacts: sarif
 
       - name: Check that the step passed
         shell: bash
@@ -310,6 +324,7 @@ jobs:
           ballerina-version: 2201.13.5
           paths: test/projects/single
           category: baseline
+          artifacts: sarif
 
       - name: Work out the limits
         id: limits
@@ -328,6 +343,7 @@ jobs:
         with:
           paths: test/projects/single
           category: at-limit
+          artifacts: sarif
           fail-on-severity: low
           max-findings: ${{ steps.limits.outputs.at }}
 
@@ -338,6 +354,7 @@ jobs:
         with:
           paths: test/projects/single
           category: over-limit
+          artifacts: sarif
           fail-on-severity: low
           max-findings: ${{ steps.limits.outputs.below }}
 
@@ -370,6 +387,7 @@ jobs:
           ballerina-version: 2201.13.5
           paths: test/projects/multi/orders
           category: annotated
+          artifacts: sarif
           annotations: true
 
       # A control, so that the check also shows annotations=false adds none.
@@ -379,6 +397,7 @@ jobs:
         with:
           paths: test/projects/multi/payments
           category: plain
+          artifacts: sarif
           annotations: false
 
   job-summary:
@@ -395,6 +414,7 @@ jobs:
           ballerina-version: 2201.13.5
           paths: test/projects/multi/orders
           category: with-summary
+          artifacts: sarif
 
       - name: Scan without a job summary
         id: without-summary
@@ -402,6 +422,7 @@ jobs:
         with:
           paths: test/projects/multi/orders
           category: without-summary
+          artifacts: sarif
           job-summary: false
 
       # Each step writes its summary to a file in the runner's file command directory.
@@ -432,13 +453,13 @@ jobs:
           category: artifacts-both
           artifacts: sarif,ballerina
 
-      - name: Scan and save the SARIF file only
-        id: sarif
+      - name: Scan without saving reports
+        id: empty
         uses: ./
         with:
           paths: test/projects/multi/orders
-          category: artifacts-sarif
-          artifacts: sarif
+          category: artifacts-empty
+          artifacts: ''
 
       - name: Scan with an unknown report
         id: unknown
@@ -459,7 +480,9 @@ jobs:
         shell: bash
         env:
           BOTH_UPLOADS: ${{ steps.both.outputs.uploads }}
-          SARIF_UPLOADS: ${{ steps.sarif.outputs.uploads }}
+          EMPTY_RESULT: ${{ steps.empty.outputs.result }}
+          EMPTY_SARIF: ${{ steps.empty.outputs.sarif-file }}
+          EMPTY_UPLOADS: ${{ steps.empty.outputs.uploads }}
           UNKNOWN_OUTCOME: ${{ steps.unknown.outcome }}
           UNKNOWN_RESULT: ${{ steps.unknown.outputs.result }}
         run: |
@@ -479,10 +502,14 @@ jobs:
           jq -e '.artifact | .name == "artifacts-both" and (.id | length > 0) and (.url | startswith("https://"))' \
             <<< "$BOTH_UPLOADS" > /dev/null || fail "both: uploads has no artifact entry: $BOTH_UPLOADS"
 
-          [ "$(cd "$DIR/artifacts-sarif" && find . -type f)" = ./artifacts-sarif.sarif ] \
-            || fail "sarif: the artifact must hold the SARIF file only"
-          jq -e '.artifact.name == "artifacts-sarif"' <<< "$SARIF_UPLOADS" > /dev/null \
-            || fail "sarif: uploads has no artifact entry: $SARIF_UPLOADS"
+          EMPTY_WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-artifacts-empty-*)"
+          [ "$EMPTY_RESULT" = passed ] || fail "empty: result is '$EMPTY_RESULT', expected passed"
+          [ -f "$EMPTY_SARIF" ] || fail "empty: the SARIF file must still be written, got sarif-file '$EMPTY_SARIF'"
+          [ ! -e "$DIR/artifacts-empty" ] || fail "empty: no artifact must be saved"
+          jq -e 'has("artifact") | not' <<< "$EMPTY_UPLOADS" > /dev/null \
+            || fail "empty: uploads must have no artifact entry: $EMPTY_UPLOADS"
+          [ ! -e "$EMPTY_WORK/artifact" ] || fail "empty: the reports must not be collected"
+          [ ! -e "$EMPTY_WORK/ballerina" ] || fail "empty: bal scan --format=json must not run"
 
           [ "$UNKNOWN_OUTCOME" = failure ] || fail "unknown: an unknown report must fail the step, but its outcome is '$UNKNOWN_OUTCOME'"
           [ "$UNKNOWN_RESULT" = error ] || fail "unknown: result is '$UNKNOWN_RESULT', expected error"
@@ -508,6 +535,7 @@ jobs:
         with:
           paths: test/sonarqube/absolute-plugin
           category: absolute-plugin
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -522,6 +550,7 @@ jobs:
         with:
           paths: test/sonarqube/http-plugin
           category: http-plugin
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -538,6 +567,7 @@ jobs:
         with:
           paths: test/projects/multi/orders
           category: no-token
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -553,6 +583,7 @@ jobs:
         with:
           paths: test/projects/multi/orders
           category: empty-token
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -567,6 +598,7 @@ jobs:
         with:
           paths: test/projects/multi
           category: duplicate-keys
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -585,6 +617,7 @@ jobs:
         with:
           paths: test/projects/multi
           category: shared-project-key
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -599,6 +632,7 @@ jobs:
         with:
           paths: test/projects/multi/orders
           category: http-host
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -613,6 +647,7 @@ jobs:
         with:
           paths: test/projects/multi/orders
           category: unmatched-package
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -694,6 +729,7 @@ jobs:
           ballerina-version: 2201.13.5
           paths: test/sonarqube/remote-plugin
           category: remote-plugin
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -747,6 +783,7 @@ jobs:
           ballerina-version: 2201.13.5
           paths: test/projects/multi/orders
           category: plugin-version
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -802,6 +839,7 @@ jobs:
           ballerina-version: 2201.13.5
           paths: test/sonarqube/properties
           category: properties
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
@@ -815,6 +853,7 @@ jobs:
         with:
           paths: test/sonarqube/properties
           category: override
+          artifacts: sarif
           platforms: sonarqube
           platform-config: |
             sonarqube:
