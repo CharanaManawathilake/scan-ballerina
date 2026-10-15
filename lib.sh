@@ -34,6 +34,10 @@ sonar_scanner_sha256() {
 
 KNOWN_PLATFORMS=(github-code-scanning sonarqube)
 
+# Reports the artifacts input can save: the merged SARIF file, and the JSON report bal scan writes
+# for each package.
+KNOWN_ARTIFACTS=(sarif ballerina)
+
 # jq on Windows ends lines with CRLF, which 'read' keeps. JSON escapes CRs inside strings, so
 # dropping every CR is safe; pipefail keeps jq's exit code.
 if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then

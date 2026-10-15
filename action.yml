@@ -58,6 +58,10 @@ inputs:
     description: 'Write the result and the high, medium and low counts to the job summary.'
     required: false
     default: 'true'
+  artifacts:
+    description: 'Comma separated reports to save as a workflow artifact named after the category: sarif for the merged SARIF file, ballerina for the JSON report bal scan writes for each package. Empty saves nothing.'
+    required: false
+    default: ''
   platform-config:
     description: 'YAML mapping, keyed by platform, with the settings and credentials each selected platform needs. JSON is accepted.'
     required: false
@@ -90,7 +94,7 @@ outputs:
     description: 'Number of packages scanned.'
     value: ${{ steps.find.outputs.packages }}
   uploads:
-    description: 'JSON object with one entry per platform the findings were sent to. {} when nothing was uploaded.'
+    description: 'JSON object with one entry per platform the findings were sent to, and an artifact entry when reports were saved as an artifact. {} when nothing was uploaded.'
     value: ${{ steps.report.outputs.uploads }}
 
 runs:
@@ -112,6 +116,7 @@ runs:
         MAX_FINDINGS: ${{ inputs.max-findings }}
         ANNOTATIONS: ${{ inputs.annotations }}
         JOB_SUMMARY: ${{ inputs.job-summary }}
+        ARTIFACTS: ${{ inputs.artifacts }}
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         BALLERINA_VERSION: ${{ inputs.ballerina-version }}
         TOOL_VERSION: ${{ inputs.tool-version }}
@@ -186,6 +191,7 @@ runs:
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         INCLUDE_RULES: ${{ inputs.include-rules }}
         EXCLUDE_RULES: ${{ inputs.exclude-rules }}
+        ARTIFACTS: ${{ steps.validate.outputs.artifacts }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scan.sh"
 
@@ -208,6 +214,27 @@ runs:
         sarif_file: ${{ steps.merge.outputs.sarif-file }}
         category: ${{ inputs.category }}
         token: ${{ inputs.github-token }}
+
+    # Runs even when an earlier step failed, so that the reports that were written are still saved.
+    - name: Collect the reports to save
+      id: collect
+      if: ${{ !cancelled() && steps.validate.outputs.artifacts != '' }}
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        ARTIFACTS: ${{ steps.validate.outputs.artifacts }}
+        SARIF_FILE: ${{ steps.merge.outputs.sarif-file }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/collect-artifacts.sh"
+
+    - name: Save the reports as an artifact
+      id: artifact
+      if: ${{ !cancelled() && steps.collect.outputs.path != '' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.validate.outputs.artifact-name }}
+        path: ${{ steps.collect.outputs.path }}
+        if-no-files-found: error
 
     - name: Report
       id: report
@@ -232,6 +259,8 @@ runs:
             (steps.scan.outcome == 'failure' && 'scan the packages') ||
             (steps.merge.outcome == 'failure' && 'merge the SARIF reports') ||
             (steps.upload.outcome == 'failure' && 'upload to GitHub code scanning') ||
+            (steps.collect.outcome == 'failure' && 'collect the reports to save') ||
+            (steps.artifact.outcome == 'failure' && 'save the reports as an artifact') ||
             ''
           }}
         UNIT_COUNT: ${{ steps.find.outputs.count }}
@@ -240,6 +269,9 @@ runs:
         MEDIUM: ${{ steps.merge.outputs.medium-count }}
         LOW: ${{ steps.merge.outputs.low-count }}
         SARIF_ID: ${{ steps.upload.outputs.sarif-id }}
+        ARTIFACT_NAME: ${{ steps.validate.outputs.artifact-name }}
+        ARTIFACT_ID: ${{ steps.artifact.outputs.artifact-id }}
+        ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
         GCS_SKIPPED: ${{ steps.validate.outputs.github-code-scanning-skipped }}
         SONARQUBE_SKIPPED: ${{ steps.validate.outputs.sonarqube-skipped }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/report.sh"

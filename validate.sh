@@ -4,9 +4,9 @@
 #
 # Inputs (environment): PLATFORMS, SCAN_PATHS, EXCLUDE_PATHS, EXCLUDE_TESTS, CATEGORY,
 # INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, MAX_FINDINGS, ANNOTATIONS, JOB_SUMMARY,
-# PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION.
+# ARTIFACTS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION.
 # Outputs: work-dir, github-code-scanning, github-code-scanning-skipped, sonarqube,
-# sonarqube-skipped.
+# sonarqube-skipped, artifacts (the reports to save, comma separated), artifact-name.
 
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
@@ -46,6 +46,16 @@ while IFS= read -r p; do
   fi
 done < <(split_list "${PLATFORMS:-}")
 selected() { one_of "$1" "${SELECTED[@]+"${SELECTED[@]}"}"; }
+
+# Artifacts
+ARTIFACT_KINDS=()
+while IFS= read -r a; do
+  if one_of "$a" "${KNOWN_ARTIFACTS[@]}"; then
+    one_of "$a" "${ARTIFACT_KINDS[@]+"${ARTIFACT_KINDS[@]}"}" || ARTIFACT_KINDS+=("$a")
+  else
+    error "artifacts has an unknown report '$a'. Accepted values: ${KNOWN_ARTIFACTS[*]}."
+  fi
+done < <(split_list "${ARTIFACTS:-}")
 
 # Paths
 ROOT="$(workspace_root)"
@@ -179,7 +189,7 @@ GCS_SKIPPED=false
 if selected github-code-scanning; then
   GCS=true
   if [ "$RESTRICTED" = true ]; then
-    log_warning "Skipping the upload to GitHub code scanning: pull requests from forks or Dependabot get a read-only GITHUB_TOKEN. The SARIF file is kept as the sarif-file output; save it with actions/upload-artifact and upload it from a trusted workflow_run workflow."
+    log_warning "Skipping the upload to GitHub code scanning: pull requests from forks or Dependabot get a read-only GITHUB_TOKEN. The SARIF file is kept as the sarif-file output; save it with artifacts: sarif and upload it from a trusted workflow_run workflow."
     GCS=false
     GCS_SKIPPED=true
   fi
@@ -229,4 +239,7 @@ set_output github-code-scanning "$GCS"
 set_output github-code-scanning-skipped "$GCS_SKIPPED"
 set_output sonarqube "$SONARQUBE"
 set_output sonarqube-skipped "$(selected sonarqube && [ "$SONARQUBE" = false ] && echo true || echo false)"
+set_output artifacts "$(IFS=,; echo "${ARTIFACT_KINDS[*]+"${ARTIFACT_KINDS[*]}"}")"
+set_output artifact-name "$SAFE_CATEGORY"
 echo "Platforms: ${SELECTED[*]:-none (SARIF file only)}"
+[ "${#ARTIFACT_KINDS[@]}" -eq 0 ] || echo "Artifact '$SAFE_CATEGORY': ${ARTIFACT_KINDS[*]}"

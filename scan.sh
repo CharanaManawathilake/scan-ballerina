@@ -11,11 +11,14 @@
 #     SonarScanner on its path. The scan tool reads the platform plugin only from Scan.toml, so
 #     its sonarqube [[platform]] entry points to the resolved plugin for this pass only: the file
 #     is restored, or deleted when the action created it, as soon as the pass ends.
+#   - Ballerina report pass, when ARTIFACTS has ballerina: bal scan --format=json, right after the
+#     SARIF pass and with the same [[platform]] entries hidden.
 # A failing unit does not stop the others, so every failure is reported; the step then fails.
 #
 # Inputs (environment): SCAN_WORK_DIR, SONARQUBE, PLATFORM_CONFIG, SCANNER_BIN, INCLUDE_RULES,
-# EXCLUDE_RULES, CATEGORY.
-# Writes: $SCAN_WORK_DIR/reports/<index>.sarif per unit, in the order of units.json, and
+# EXCLUDE_RULES, ARTIFACTS, CATEGORY.
+# Writes: $SCAN_WORK_DIR/reports/<index>.sarif per unit, in the order of units.json,
+# $SCAN_WORK_DIR/ballerina/<unit path>/scan_results.json per unit when ARTIFACTS has ballerina, and
 # $SCAN_WORK_DIR/sonarqube-uploads.json.
 
 # shellcheck source=lib.sh
@@ -30,6 +33,9 @@ INCLUDE="$(split_list "${INCLUDE_RULES:-}" | paste -sd, -)"
 EXCLUDE="$(split_list "${EXCLUDE_RULES:-}" | paste -sd, -)"
 [ -n "$INCLUDE" ] && RULE_ARGS+=("--include-rules=$INCLUDE")
 [ -n "$EXCLUDE" ] && RULE_ARGS+=("--exclude-rules=$EXCLUDE")
+
+BALLERINA_REPORT=false
+[[ ",${ARTIFACTS:-}," == *,ballerina,* ]] && BALLERINA_REPORT=true
 
 SONAR=""
 if [ "${SONARQUBE:-false}" = "true" ]; then
@@ -156,17 +162,38 @@ while IFS= read -r unit; do
 
   status=0
   run_bal_scan "$path" "$WORK/logs/scan-$idx.log" --format=sarif "${RULE_ARGS[@]+"${RULE_ARGS[@]}"}" || status=$?
-  restore_scan_tomls
 
   # bal scan reports some errors, such as an invalid Scan.toml, without a failing exit code.
+  scanned=false
   if [ "$status" -ne 0 ]; then
     FAILED+=("$path: bal scan exited with code $status")
   elif [ ! -f "$report" ] || ! jq -e '.runs[0]' "$report" > /dev/null 2>&1; then
     FAILED+=("$path: bal scan did not write a SARIF report. See its output above")
   else
     cp "$report" "$out"
+    scanned=true
   fi
   echo "::endgroup::"
+
+  # The Ballerina report needs a pass of its own, since bal scan writes one format per run. It runs
+  # while the [[platform]] entries are still hidden.
+  if [ "$scanned" = true ] && [ "$BALLERINA_REPORT" = true ]; then
+    echo "::group::bal scan $path (Ballerina report)"
+    json_report="$path/target/report/scan_results.json"
+    rm -f "$json_report"
+    status=0
+    run_bal_scan "$path" "$WORK/logs/scan-json-$idx.log" --format=json "${RULE_ARGS[@]+"${RULE_ARGS[@]}"}" || status=$?
+    if [ "$status" -ne 0 ]; then
+      FAILED+=("$path: bal scan exited with code $status while writing the Ballerina report")
+    elif ! jq -e 'type == "array"' "$json_report" > /dev/null 2>&1; then
+      FAILED+=("$path: bal scan did not write a Ballerina report. See its output above")
+    else
+      mkdir -p "$WORK/ballerina/$path"
+      cp "$json_report" "$WORK/ballerina/$path/scan_results.json"
+    fi
+    echo "::endgroup::"
+  fi
+  restore_scan_tomls
 
   if [ "${SONARQUBE:-false}" = "true" ]; then
     settings="$(jq -c --arg p "$path" 'map(select(.package == $p)) | first' "$WORK/sonarqube.json")"

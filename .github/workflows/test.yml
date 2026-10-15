@@ -417,6 +417,78 @@ jobs:
             fail "job-summary=false must not write the summary"
           fi
 
+  artifacts:
+    name: Reports saved as an artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan and save both reports
+        id: both
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi
+          category: artifacts-both
+          artifacts: sarif,ballerina
+
+      - name: Scan and save the SARIF file only
+        id: sarif
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: artifacts-sarif
+          artifacts: sarif
+
+      - name: Scan with an unknown report
+        id: unknown
+        continue-on-error: true
+        uses: ./
+        with:
+          paths: test/projects/multi/orders
+          category: artifacts-unknown
+          artifacts: sarif,html
+
+      - name: Download the artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-*
+          path: ${{ runner.temp }}/downloaded
+
+      - name: Check the artifacts
+        shell: bash
+        env:
+          BOTH_UPLOADS: ${{ steps.both.outputs.uploads }}
+          SARIF_UPLOADS: ${{ steps.sarif.outputs.uploads }}
+          UNKNOWN_OUTCOME: ${{ steps.unknown.outcome }}
+          UNKNOWN_RESULT: ${{ steps.unknown.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          DIR="$RUNNER_TEMP/downloaded"
+          (cd "$DIR" && find . -type f | sort)
+
+          BOTH="$DIR/artifacts-both"
+          jq -e '.runs[0].results | length > 0' "$BOTH/artifacts-both.sarif" > /dev/null \
+            || fail "both: the artifact must hold the merged SARIF file with its findings"
+          for p in orders payments; do
+            jq -e 'type == "array" and length > 0' "$BOTH/test/projects/multi/$p/scan_results.json" > /dev/null \
+              || fail "both: the artifact must hold the Ballerina report of test/projects/multi/$p"
+          done
+          [ "$(find "$BOTH" -type f | wc -l)" -eq 3 ] || fail "both: expected the SARIF file and two Ballerina reports"
+          jq -e '.artifact | .name == "artifacts-both" and (.id | length > 0) and (.url | startswith("https://"))' \
+            <<< "$BOTH_UPLOADS" > /dev/null || fail "both: uploads has no artifact entry: $BOTH_UPLOADS"
+
+          [ "$(cd "$DIR/artifacts-sarif" && find . -type f)" = ./artifacts-sarif.sarif ] \
+            || fail "sarif: the artifact must hold the SARIF file only"
+          jq -e '.artifact.name == "artifacts-sarif"' <<< "$SARIF_UPLOADS" > /dev/null \
+            || fail "sarif: uploads has no artifact entry: $SARIF_UPLOADS"
+
+          [ "$UNKNOWN_OUTCOME" = failure ] || fail "unknown: an unknown report must fail the step, but its outcome is '$UNKNOWN_OUTCOME'"
+          [ "$UNKNOWN_RESULT" = error ] || fail "unknown: result is '$UNKNOWN_RESULT', expected error"
+          [ ! -e "$DIR/artifacts-unknown" ] || fail "unknown: no artifact must be saved when the inputs are invalid"
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scans must not change the packages: $(git status --porcelain -- test)"
+
   # The SonarQube tests report to a dummy server, so each scan that gets past the settings fails
   # when SonarScanner cannot reach it. They check what the action resolved and downloaded, and that
   # the platform plugin ran SonarScanner against the server.
