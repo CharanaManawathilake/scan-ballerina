@@ -1,6 +1,8 @@
 # Merges normalized bal scan SARIF reports (slurped) into one run, and fills in what GitHub code
 # scanning renders. GitHub accepts one run per category, so all packages share a run: rules are
-# deduplicated by ID and each result's ruleIndex is recomputed.
+# deduplicated by ID and each result's ruleIndex is recomputed. The run.artifacts of the reports
+# are concatenated, so each artifactLocation.index is moved by the number of artifacts of the
+# runs before its own.
 
 def owasp_2025: {
   "A01": "Broken Access Control",
@@ -56,8 +58,18 @@ def enrich:
     elif .properties.ruleKind == "CODE_SMELL" then .properties.tags = (((.properties.tags // []) + ["maintainability"]) | unique)
     else . end;
 
+def shift_index($offset):
+  if (.physicalLocation.artifactLocation.index | type) == "number"
+  then .physicalLocation.artifactLocation.index += $offset else . end;
+
+def shift_indexes($offset):
+  (if .locations then .locations |= map(shift_index($offset)) else . end)
+  | (if .relatedLocations then .relatedLocations |= map(shift_index($offset)) else . end);
+
 . as $all
 | ($all | map(.runs[]?)) as $runs
+| ($runs | map(.artifacts // [] | length)) as $artifact_counts
+| ($runs | map(.artifacts[]?)) as $artifacts
 | ($runs[0].tool.driver | generic_messages) as $generic
 | ($runs | map(.tool.driver.rules[]?) | unique_by(.id)) as $tool_rules
 | ($tool_rules | map(select(.fullDescription.text) | {key: .id, value: .fullDescription.text}) | from_entries) as $descriptions
@@ -67,8 +79,13 @@ def enrich:
     "$schema": ($all[0]["$schema"] // "https://json.schemastore.org/sarif-2.1.0.json"),
     version: "2.1.0",
     runs: [{
-      tool: (($runs[0].tool // {driver: {name: "Ballerina Scan Tool"}}) | .driver.rules = $rules),
-      results: ($runs | map(.results[]?) | map(
+      tool: (($runs[0].tool // {driver: {name: "Ballerina Scan Tool"}}) | .driver.rules = $rules)
+    }
+    + (if ($artifacts | length) > 0 then {artifacts: $artifacts} else {} end)
+    + {
+      results: ([range(0; $runs | length) as $i
+          | ($artifact_counts[:$i] | add // 0) as $offset
+          | $runs[$i].results[]? | shift_indexes($offset)] | map(
         .ruleId as $id
         | .ruleIndex = $index[$id]
         | if .ruleIndex == null then del(.ruleIndex) else . end

@@ -830,6 +830,7 @@ jobs:
         env:
           OUTCOME: ${{ steps.scan.outcome }}
           RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
@@ -851,6 +852,7 @@ jobs:
             || fail "SonarScanner did not report to the configured server"
           [ "$OUTCOME" = failure ] || fail "The step should fail, since the server does not exist, but its outcome is '$OUTCOME'"
           [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+          [ -f "$SARIF_FILE" ] || fail "A failed SonarQube scan must not stop the SARIF file, got sarif-file '$SARIF_FILE'"
           [ -z "$(git status --porcelain -- test)" ] || fail "Scan.toml must be restored after the scan: $(git status --porcelain -- test)"
 
   sonarqube-plugin-version:
@@ -885,6 +887,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           OUTCOME: ${{ steps.scan.outcome }}
           RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          TOTAL: ${{ steps.scan.outputs.total-count }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
@@ -900,9 +904,15 @@ jobs:
             https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/0.3.0/sonar-platform-plugin-0.3.0.jar
           [ "$(sha256sum < "$PLUGIN_FILE")" = "$(sha256sum < "$RUNNER_TEMP/expected.jar")" ] \
             || fail "The downloaded plugin is not version 0.3.0"
+          source scripts/lib.sh
+          [ "$(sha256_of "$PLUGIN_FILE")" = "$(sonar_plugin_sha256 0.3.0)" ] \
+            || fail "The checksum pinned for version 0.3.0 does not match the published plugin"
           grep -q 'SonarScanner CLI' "$WORK/logs/sonarqube-0.log" || fail "The plugin did not run SonarScanner"
           [ "$OUTCOME" = failure ] || fail "The step should fail, since the server does not exist, but its outcome is '$OUTCOME'"
           [ "$RESULT" = error ] || fail "result is '$RESULT', expected error"
+          # SonarQube is one destination, so its failure still leaves the SARIF file and the counts.
+          [ -f "$SARIF_FILE" ] || fail "A failed SonarQube scan must not stop the SARIF file, got sarif-file '$SARIF_FILE'"
+          [ "$TOTAL" = 1 ] || fail "total-count is '$TOTAL', expected 1"
           # The package has no Scan.toml, so the one the action wrote for the scan must be deleted.
           [ -z "$(git status --porcelain -- test)" ] || fail "The scan left changes in test: $(git status --porcelain -- test)"
 
@@ -1026,9 +1036,9 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           WORK="$(ls -d "$RUNNER_TEMP"/scan-ballerina-platform-project-key-*)"
           jq . "$WORK/sonarqube.json"
-          # The SonarQube scan fails, so no package counts as scanned. sonarqube.json shows that
-          # exclude-paths left one package.
-          [ -z "$PACKAGES" ] || fail "packages-scanned is '$PACKAGES', expected empty since the scan failed"
+          # The SonarQube scan fails, but the SARIF scan of the one package that exclude-paths left
+          # passes.
+          [ "$PACKAGES" = 1 ] || fail "packages-scanned is '$PACKAGES', expected 1"
           jq -e 'length == 1 and (.[0] | .package == "test/projects/multi/orders"
               and ."project-key" == "orders" and ."project-name" == "Orders Service")' \
             "$WORK/sonarqube.json" > /dev/null || fail "orders must take the platform-level key and the name from its item"
@@ -1088,6 +1098,7 @@ jobs:
           SARIF_RESULT: ${{ steps.sarif-failure.outputs.result }}
           SONARQUBE_OUTCOME: ${{ steps.sonarqube-failure.outcome }}
           SONARQUBE_RESULT: ${{ steps.sonarqube-failure.outputs.result }}
+          SONARQUBE_SARIF_FILE: ${{ steps.sonarqube-failure.outputs.sarif-file }}
         run: |
           set -euo pipefail
           FAILURES=0
@@ -1103,11 +1114,13 @@ jobs:
           [ "$SONARQUBE_OUTCOME" = failure ] && [ "$SONARQUBE_RESULT" = error ] \
             || fail "sonarqube-failure: expected the step to fail with result error, got '$SONARQUBE_OUTCOME' and '$SONARQUBE_RESULT'"
           [ -f "$SONARQUBE_WORK/reports/0.sarif" ] || fail "sonarqube-failure: the SARIF scan must pass"
+          [ -f "$SONARQUBE_SARIF_FILE" ] || fail "sonarqube-failure: a failed SonarQube scan must not stop the SARIF file"
           grep -q 'SonarScanner CLI' "$SONARQUBE_WORK/logs/sonarqube-0.log" \
             || fail "sonarqube-failure: the SonarQube scan must load the plugin from Scan.toml and run SonarScanner"
 
           sha256sum -c "$RUNNER_TEMP/scan-toml.sha256" || fail "Scan.toml must be restored byte for byte"
           [ -z "$(git status --porcelain -- test)" ] || fail "The scans left changes in test: $(git status --porcelain -- test)"
+          [ ! -s .git/scan-ballerina/manifest.tsv ] || fail "The journal must be empty once the files are restored"
           # .gitignore hides what SonarScanner and the platform plugin write, so look for it directly.
           for f in .scannerwork ballerina-static-code-analysis-results.json; do
             [ ! -e "test/restore/sonarqube-failure/$f" ] || fail "sonarqube-failure: $f must be deleted after the SonarQube scan"
@@ -1254,6 +1267,142 @@ jobs:
             fail "A Scan.toml the action cannot use must fail before Ballerina is installed"
           fi
           [ "$FAILURES" -eq 0 ] || exit 1
+
+  # test/sarif holds two bal scan reports, of a package whose path has a space and of a workspace,
+  # with run.artifacts, artifact indexes, a test file, a '#' in a file name and a backslash in a
+  # URI. The merged file must match test/sarif/expected.sarif.
+  sarif-golden:
+    name: SARIF merging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Merge the reports and compare with the golden files
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/sarif-golden"
+          mkdir -p "$WORK"
+          cp -r test/sarif/units.json test/sarif/reports "$WORK/"
+          SCAN_WORK_DIR="$WORK" EXCLUDE_TESTS=true EXCLUDE_PATHS= CATEGORY=golden bash scripts/merge-sarif.sh
+          diff -u test/sarif/expected.sarif <(jq -S . "$WORK/golden.sarif")
+          diff -u test/sarif/expected-findings.json <(jq -S . "$WORK/findings.json")
+
+      - name: Validate the merged file against the SARIF 2.1.0 schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/sarif-schema.json" https://json.schemastore.org/sarif-2.1.0.json
+          pipx run check-jsonschema --schemafile "$RUNNER_TEMP/sarif-schema.json" "$RUNNER_TEMP/sarif-golden/golden.sarif"
+
+  # test/toml holds Scan.toml files with comments, inline tables, indented and spaced headers,
+  # tabs and sub-tables, and two forms the action must reject before scanning.
+  toml-editing:
+    name: Scan.toml editing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare with the golden files
+        shell: bash
+        run: |
+          set -euo pipefail
+          source scripts/lib.sh
+          diff -u test/toml/expected/mixed.all.toml <(drop_platforms all < test/toml/mixed.toml)
+          diff -u test/toml/expected/mixed.sonarqube.toml <(drop_platforms sonarqube < test/toml/mixed.toml)
+          # The edited files must still be valid TOML, with the right entries left.
+          [ "$(drop_platforms all < test/toml/mixed.toml | yq -p toml -o json '.platform // [] | length')" = 0 ]
+          [ "$(drop_platforms sonarqube < test/toml/mixed.toml | yq -p toml -o json -I0 '[.platform[].name]')" = '["other"]' ]
+          [ -z "$(platform_form_problem test/toml/mixed.toml mixed)" ]
+          platform_form_problem test/toml/inline-array.toml inline | grep -q 'such as an array of inline tables'
+          platform_form_problem test/toml/multiline-string.toml multiline | grep -q 'without breaking the file'
+
+  # A run that is stopped before it restores its files leaves them in the journal, and the next
+  # run restores them before it reads any Ballerina.toml or Scan.toml.
+  interrupted-restore:
+    name: Files restored after an interrupted run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Leave a changed Scan.toml and Ballerina.toml behind
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256sum test/restore/sarif-failure/Scan.toml test/remote-scan-toml/Ballerina.toml | tee "$RUNNER_TEMP/files.sha256"
+          SCAN_WORK_DIR="$RUNNER_TEMP/stopped" bash -c '
+            source scripts/lib.sh
+            mkdir -p "$SCAN_WORK_DIR"
+            journal_init
+            for f in test/restore/sarif-failure/Scan.toml test/remote-scan-toml/Ballerina.toml; do
+              printf "changed by a stopped run\n" > "$SCAN_WORK_DIR/new"
+              protect "$f" "$(sha256_of "$SCAN_WORK_DIR/new")"
+              cp "$SCAN_WORK_DIR/new" "$f"
+            done
+            protect test/projects/single/.scannerwork
+            mkdir -p test/projects/single/.scannerwork
+            # Killed: no trap runs.
+            kill -9 $$' || true
+          if sha256sum --quiet -c "$RUNNER_TEMP/files.sha256" 2> /dev/null; then
+            echo "::error::The stopped run must leave the files changed"
+            exit 1
+          fi
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/single
+          category: interrupted-restore
+
+      - name: Check that the files were restored
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          sha256sum -c "$RUNNER_TEMP/files.sha256" || fail "The files must be restored byte for byte"
+          [ ! -e test/projects/single/.scannerwork ] || fail ".scannerwork must be deleted"
+          [ ! -s .git/scan-ballerina/manifest.tsv ] || fail "The journal must be empty once it is replayed"
+
+  operating-systems:
+    name: Scan on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: 2201.13.5
+          paths: test/projects/multi, test/restore/sonarqube-failure
+          category: os-${{ matrix.os }}
+
+      - name: Check the result
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+          SARIF_FILE: ${{ steps.scan.outputs.sarif-file }}
+          PACKAGES: ${{ steps.scan.outputs.packages-scanned }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          [ "$PACKAGES" = 3 ] || fail "packages-scanned is '$PACKAGES', expected 3"
+          [ -f "$SARIF_FILE" ] || fail "sarif-file '$SARIF_FILE' does not exist"
+          jq -e '[.runs[0].results[].locations[0].physicalLocation.artifactLocation.uri]
+              | all(startswith("test/") and (contains("\\") | not))' "$SARIF_FILE" > /dev/null \
+            || fail "Every URI must be relative to the repository root, with forward slashes"
+          # The SARIF scan hid the [[platform]] entries of test/restore/sonarqube-failure.
+          [ -z "$(git status --porcelain -- test)" ] || fail "The scan left changes in test: $(git status --porcelain -- test)"
 
   # Annotations reach the check run only after the job that wrote them has finished, so they are
   # checked from this job.

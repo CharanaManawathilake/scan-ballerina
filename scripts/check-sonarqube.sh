@@ -71,7 +71,7 @@ RESOLVED='[]'
 while IFS= read -r unit; do
   pkg="$(jq -r '.path' <<< "$unit")"
   if [ "$(jq -r '.kind' <<< "$unit")" = "workspace" ]; then
-    error "Package '$pkg' is a workspace. bal scan reports each workspace member to the same SonarQube project, so SonarQube is not supported for workspaces yet. Give the member packages in paths and exclude the workspace with exclude-paths, or leave sonarqube out of platforms."
+    error "Package '$pkg' is a workspace. bal scan reports each workspace member to the same SonarQube project, so SonarQube is not supported for workspaces yet. Give the member package directories in paths instead of the workspace or a directory above it, or leave sonarqube out of platforms."
     continue
   fi
 
@@ -98,6 +98,13 @@ while IFS= read -r unit; do
       continue
     fi
     entry="$(jq -c 'map(select(.name == "sonarqube")) | first // {}' <<< "$platforms")"
+    # The SonarQube scan replaces this entry with one for the resolved plugin.
+    left="$(drop_platforms sonarqube < "$scan_toml" \
+      | yq -p toml -o json -I0 '[.platform // [] | .[] | select(.name == "sonarqube")] | length' 2> /dev/null | tr -d '\r')" || left=""
+    if [ "$left" != 0 ]; then
+      error "Package '$pkg': the sonarqube [[platform]] entry in '$scan_toml_name' is in a form the action cannot replace. Write it as a [[platform]] table with name = \"sonarqube\" on its own line."
+      continue
+    fi
   fi
 
   # 1. Platform plugin. A plugin-path or plugin-version in the item replaces both platform-level

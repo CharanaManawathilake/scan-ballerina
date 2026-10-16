@@ -5,7 +5,7 @@
 #
 # The SonarScanner distribution for the runner's operating system bundles its own Java runtime, so
 # the job needs no Java or scanner setup step. Its checksum is verified against the one this
-# release pins.
+# release pins, and so is the checksum of a platform plugin version this release knows.
 #
 # Inputs (environment): SCAN_WORK_DIR, GITHUB_TOKEN (reads the plugin from GitHub Packages),
 # CATEGORY.
@@ -51,10 +51,21 @@ plugin_version_file() {
     [ -n "$version" ] || die "Could not read the latest SonarQube platform plugin version from GitHub Packages." >&2
     echo "Latest SonarQube platform plugin: $version" >&2
   fi
-  local file="$CACHE/sonar-platform-plugin-$version.jar"
+  local file="$CACHE/sonar-platform-plugin-$version.jar" expected actual
   if [ ! -f "$file" ]; then
     download_package "${SONAR_PLUGIN_URL//\{version\}/$version}" "$file" \
       || die "Could not download version $version of the SonarQube platform plugin. $PACKAGES_HINT" >&2
+  fi
+  # The plugin runs with the SonarQube token, so a version this release knows must match its
+  # pinned checksum, also when it comes from the cache.
+  if expected="$(sonar_plugin_sha256 "$version")"; then
+    actual="$(sha256_of "$file")"
+    if [ "$actual" != "$expected" ]; then
+      rm -f "$file"
+      die "Version $version of the SonarQube platform plugin has the SHA-256 $actual, but $expected was expected." >&2
+    fi
+  else
+    log_warning "This release of the action has no checksum for version $version of the SonarQube platform plugin, so the download is not verified. Leave plugin-version out to use the pinned version $PINNED_SONAR_PLUGIN_VERSION, which is verified." >&2
   fi
   printf '%s' "$file"
 }

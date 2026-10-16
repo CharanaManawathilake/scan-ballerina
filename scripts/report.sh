@@ -6,6 +6,8 @@
 # MAX_FINDINGS, FAILED_STEP (the first step that failed, empty when none did), UNIT_COUNT,
 # PACKAGES_SCANNED, HIGH, MEDIUM, LOW, TOTAL, SARIF_ID, ARTIFACT_NAME, ARTIFACT_ID, ARTIFACT_URL,
 # GCS_SKIPPED, SONARQUBE_SKIPPED.
+# Reads: $SCAN_WORK_DIR/sonarqube-failures.txt, written by scan.sh. A package whose SonarQube scan
+# failed makes the result error and fails the step here, after the SARIF file was uploaded.
 # Outputs: result, uploads, high-count, medium-count, low-count, total-count, packages-scanned.
 
 # shellcheck source=lib.sh
@@ -44,10 +46,20 @@ if [ -n "${ARTIFACT_ID:-}" ]; then
 fi
 set_output uploads "$UPLOADS"
 
+# Packages whose SonarQube scan failed. The SARIF file was still produced and sent to the other
+# platforms, so the step fails here, at the end.
+SONAR_FAILURES=()
+if [ -n "$WORK" ] && [ -s "$WORK/sonarqube-failures.txt" ]; then
+  while IFS= read -r line; do [ -n "$line" ] && SONAR_FAILURES+=("$line"); done < "$WORK/sonarqube-failures.txt"
+  SONAR_FAILURES=("Reporting to SonarQube failed for ${#SONAR_FAILURES[@]} package(s). The SARIF file was still produced." \
+    "${SONAR_FAILURES[@]}")
+fi
+
 REASONS=()
 if [ -n "${FAILED_STEP:-}" ]; then
   RESULT=error
-  REASONS+=("The step failed while it was trying to ${FAILED_STEP}. See the step log for the errors.")
+  REASONS+=("The step failed while it was trying to ${FAILED_STEP}. See the step log for the errors." \
+    "${SONAR_FAILURES[@]+"${SONAR_FAILURES[@]}"}")
 elif [ "${UNIT_COUNT:-0}" = "0" ]; then
   RESULT=skipped
   REASONS+=("No Ballerina package was found.")
@@ -70,6 +82,10 @@ else
       REASONS+=("Found $SELECTED finding(s) at or above $FAIL_ON severity; at most $MAX are allowed.")
     fi
   fi
+  if [ "${#SONAR_FAILURES[@]}" -gt 0 ]; then
+    RESULT=error
+    REASONS=("${SONAR_FAILURES[@]}" "${REASONS[@]+"${REASONS[@]}"}")
+  fi
 fi
 set_output result "$RESULT"
 
@@ -91,7 +107,7 @@ if [ "$(trim "${ANNOTATIONS:-false}")" = "true" ] && [ -n "$WORK" ] && [ -f "$WO
   HIGH_SLOTS=$ANNOTATION_LIMIT
   MEDIUM_SLOTS=$ANNOTATION_LIMIT
   LOW_SLOTS=$ANNOTATION_LIMIT
-  [ "$RESULT" = failed ] && HIGH_SLOTS=$((HIGH_SLOTS - ${#REASONS[@]}))
+  { [ "$RESULT" = failed ] || [ "$RESULT" = error ]; } && HIGH_SLOTS=$((HIGH_SLOTS - ${#REASONS[@]}))
   if [ "$HIGH" -gt "$HIGH_SLOTS" ] || [ "$MEDIUM" -gt "$MEDIUM_SLOTS" ] || [ "$LOW" -gt "$LOW_SLOTS" ]; then
     MEDIUM_SLOTS=$((MEDIUM_SLOTS - 1))
     min() { echo $(($1 < $2 ? $1 : $2)); }
@@ -125,7 +141,7 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
     echo
     echo "**Result:** $RESULT"
     for r in "${REASONS[@]+"${REASONS[@]}"}"; do echo "- $r"; done
-    if [ "$RESULT" = "passed" ] || [ "$RESULT" = "failed" ]; then
+    if [ "$RESULT" = "passed" ] || [ "$RESULT" = "failed" ] || [ "${#SONAR_FAILURES[@]}" -gt 0 ]; then
       echo
       echo "| Severity | Findings |"
       echo "| --- | ---: |"
@@ -170,6 +186,17 @@ case "$RESULT" in
   failed)
     for r in "${REASONS[@]}"; do log_error "$r"; done
     exit 1
+    ;;
+  error)
+    # Other errors failed an earlier step, which reported them.
+    if [ "${#SONAR_FAILURES[@]}" -gt 0 ]; then
+      if [ -n "${FAILED_STEP:-}" ]; then
+        for r in "${SONAR_FAILURES[@]}"; do log_error "$r"; done
+      else
+        for r in "${REASONS[@]}"; do log_error "$r"; done
+      fi
+      exit 1
+    fi
     ;;
   passed) echo "bal scan '$CATEGORY' passed." ;;
   skipped) echo "bal scan '$CATEGORY' was skipped: no Ballerina package was found." ;;

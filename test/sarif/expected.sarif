@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+  "runs": [
+    {
+      "artifacts": [
+        {
+          "location": {
+            "uri": "services/my%20api/main.bal"
+          }
+        },
+        {
+          "location": {
+            "uri": "services/my%20api/tests/main_test.bal"
+          }
+        },
+        {
+          "location": {
+            "uri": "ws/a/x%231.bal"
+          }
+        }
+      ],
+      "results": [
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 0,
+                  "uri": "services/my%20api/main.bal"
+                },
+                "region": {
+                  "startLine": 3
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Rule one"
+          },
+          "ruleId": "ballerina:1",
+          "ruleIndex": 0
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "index": 2,
+                  "uri": "ws/a/x%231.bal"
+                },
+                "region": {
+                  "startLine": 7
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Rule two"
+          },
+          "ruleId": "ballerina:2",
+          "ruleIndex": 1
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "ws/a/modules/m/m.bal"
+                },
+                "region": {
+                  "startLine": 2
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Rule one"
+          },
+          "ruleId": "ballerina:1",
+          "ruleIndex": 0
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "Ballerina Scan Tool",
+          "rules": [
+            {
+              "defaultConfiguration": {
+                "level": "note"
+              },
+              "fullDescription": {
+                "text": "Rule one"
+              },
+              "help": {
+                "markdown": "Rule one\n\n- **Rule:** `ballerina:1`",
+                "text": "Rule one"
+              },
+              "id": "ballerina:1",
+              "shortDescription": {
+                "text": "Rule one"
+              }
+            },
+            {
+              "defaultConfiguration": {
+                "level": "warning"
+              },
+              "fullDescription": {
+                "text": "Rule two"
+              },
+              "help": {
+                "markdown": "Rule two\n\n- **Rule:** `ballerina:2`",
+                "text": "Rule two"
+              },
+              "id": "ballerina:2",
+              "shortDescription": {
+                "text": "Rule two"
+              }
+            }
+          ],
+          "semanticVersion": "0.12.0"
+        }
+      }
+    }
+  ],
+  "version": "2.1.0"
+}

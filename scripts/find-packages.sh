@@ -5,7 +5,9 @@
 # target, build and .git. A workspace is scanned as one unit from its root, so its member
 # packages are not scanned again on their own. Units matching EXCLUDE_PATHS are dropped. Each
 # package's remote Scan.toml is downloaded to the work directory, and a package whose Scan.toml
-# settings cannot be used fails the step.
+# settings cannot be used, or whose [[platform]] entries the action cannot hide, fails the step.
+# Files that an earlier run left changed, because it stopped before restoring them, are restored
+# first.
 #
 # Inputs (environment): SCAN_WORK_DIR, SCAN_PATHS, EXCLUDE_PATHS, CATEGORY.
 # Writes: $SCAN_WORK_DIR/units.json, a list of {path, kind, members}, with paths relative to
@@ -19,6 +21,10 @@ source "$SCRIPT_DIR/lib.sh"
 WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 ROOT="$(workspace_root)"
 cd "$ROOT"
+
+# Before any Ballerina.toml or Scan.toml is read, so that none still holds a change of an earlier
+# run that was stopped before it restored it.
+recover_files
 
 FOUND=()
 while IFS= read -r p; do
@@ -105,6 +111,16 @@ PROBLEMS=()
 while IFS= read -r pkg; do
   [ -d "$pkg" ] || continue
   problem="$(scan_config_problem "$pkg")"
+  if [ -z "$problem" ]; then
+    # The SARIF scan hides the [[platform]] entries, which needs them in a form the action edits.
+    file="$(scan_toml_path "$pkg")"
+    if [ -n "$file" ] && [ -f "$file" ]; then
+      name="$(scan_config_url "$pkg")"
+      [ -n "$name" ] || name="$file"
+      form="$(platform_form_problem "$file" "$name")"
+      [ -z "$form" ] || problem="Package '$pkg': $form"
+    fi
+  fi
   [ -z "$problem" ] || PROBLEMS+=("$problem")
 done < <(jq -r -L "$SCRIPT_DIR" 'include "common";
   .[] | if .kind == "workspace" then .path as $ws | .members[] | join_path($ws; .) else .path end' <<< "$UNITS")

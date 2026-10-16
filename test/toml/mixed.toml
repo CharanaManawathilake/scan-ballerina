@@ -1,0 +1,24 @@
+# Settings kept around the entries, with their comments and spacing.
+[rule]
+exclude = ["ballerina:10"]   # trailing comment
+limits = { max = 5, mode = "strict" }
+
+  [[ platform ]]   # indented header with spaces
+name="other"
+path = './other-platform.jar'
+options = { level = "high", tags = ["a", "b"] }
+
+[platform.other-settings]
+	mode = "tabbed"
+
+[[platform]]
+# A comment inside the entry.
+name   =   'sonarqube'
+path = "./sonar-platform-plugin.jar"
+
+[ platform.sonar ]
+key = "value"
+
+[analysis]
+# The last table, after the entries.
+enabled = true

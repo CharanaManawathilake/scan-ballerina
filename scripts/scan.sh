@@ -5,7 +5,7 @@
 #   - SARIF pass: bal scan --format=sarif. The scan tool writes no report file while any
 #     [[platform]] entry is active, and every entry in Scan.toml is always active. So when the
 #     package's Scan.toml has [[platform]] entries, they are hidden for this pass only: the file is
-#     copied to the work directory and restored as soon as the pass ends, also when it fails.
+#     copied to the journal and restored as soon as the pass ends, also when it fails.
 #   - SonarQube pass: bal scan --platforms=sonarqube, with the package's resolved settings passed
 #     to SonarScanner as environment variables of that process only, and the installed
 #     SonarScanner on its path. The scan tool reads the platform plugin only from Scan.toml, so
@@ -15,12 +15,15 @@
 #   - A remote Scan.toml cannot be changed, so for each pass [scan] configPath in Ballerina.toml
 #     points to a changed copy of the file find-packages.sh downloaded, and Ballerina.toml is
 #     restored as soon as the pass ends.
-# A failing unit does not stop the others, so every failure is reported; the step then fails.
+# A failing unit does not stop the others, so every failure is reported. A failed SARIF pass
+# fails the step. A failed SonarQube pass only fails SonarQube: the SARIF file is still produced,
+# and report.sh fails the step at the end.
 #
 # Inputs (environment): SCAN_WORK_DIR, SONARQUBE, PLATFORM_CONFIG, SCANNER_BIN, INCLUDE_RULES,
 # EXCLUDE_RULES, CATEGORY.
-# Writes: $SCAN_WORK_DIR/reports/<index>.sarif per unit, in the order of units.json, and
-# $SCAN_WORK_DIR/sonarqube-uploads.json.
+# Writes: $SCAN_WORK_DIR/reports/<index>.sarif per unit, in the order of units.json,
+# $SCAN_WORK_DIR/sonarqube-uploads.json and $SCAN_WORK_DIR/sonarqube-failures.txt, one line per
+# package whose SonarQube pass failed.
 # Outputs: packages, the number of packages scanned, when every unit was scanned.
 
 # shellcheck source=lib.sh
@@ -51,63 +54,13 @@ sonar_token() {
     | $item.token // .token // "" | tostring' <<< "$SONAR"
 }
 
-# Paths changed or created during one pass, as "path<TAB>backup" lines. An empty backup means the
-# path did not exist before the pass, so it is deleted.
-BACKUPS="$WORK/backups.tsv"
-: > "$BACKUPS"
-restore_files() {
-  local original backup
-  while IFS=$'\t' read -r original backup; do
-    [ -n "$original" ] || continue
-    if [ -n "$backup" ]; then
-      cp "$backup" "$original" && rm -f "$backup"
-    else
-      rm -rf "$original"
-    fi
-  done < "$BACKUPS"
-  : > "$BACKUPS"
-}
-trap restore_files EXIT INT TERM
-
-# Keeps a path as it is now until restore_files runs: an existing file is copied to the work
-# directory and copied back byte for byte, and a path that does not exist yet is deleted. An
-# existing directory is left as it is.
-protect() {
-  local path="$1" backup=""
-  [ -d "$path" ] && return 0
-  if [ -e "$path" ]; then
-    backup="$(mktemp "$WORK/backup.XXXXXX")"
-    cp "$path" "$backup"
-  fi
-  printf '%s\t%s\n' "$path" "$backup" >> "$BACKUPS"
-}
-
-# Prints a Scan.toml without its [[platform]] entries: all of them with "all", or only the
-# sonarqube ones with "sonarqube". An entry runs until the next table header that is not one of
-# its sub-tables, such as [platform.<name>], so a removed entry takes its sub-tables with it.
-drop_platforms() {
-  awk -v mode="$1" '
-    function flush() { if (!drop) printf "%s", buf; buf = ""; drop = 0; inplat = 0 }
-    /^[[:space:]]*\[/ {
-      if ($0 ~ /^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]/) {
-        if (inplat) flush()
-        inplat = 1; insub = 0; drop = (mode == "all")
-      } else if ($0 ~ /^[[:space:]]*\[\[?[[:space:]]*platform[[:space:]]*\./) {
-        if (!inplat) { inplat = 1; drop = (mode == "all") }
-        insub = 1
-      } else if (inplat) {
-        flush()
-      }
-    }
-    inplat {
-      buf = buf $0 "\n"
-      if (!insub && mode == "sonarqube" && $0 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*["\047]sonarqube["\047]/) drop = 1
-      next
-    }
-    { print }
-    END { if (inplat) flush() }
-  '
-}
+# Each pass restores the files it changed as soon as it ends. The traps also restore them when the
+# step is cancelled or the script fails, and the journal lets the next run restore them when the
+# runner stops this one before a trap can run. See journal_dir in lib.sh.
+journal_init
+trap restore_files EXIT
+trap 'restore_files; exit 130' INT
+trap 'restore_files; exit 143' TERM
 
 # Points the sonarqube [[platform]] entry of a package's Scan.toml to the resolved plugin JAR until
 # restore_files runs. The other entries and settings are kept. The properties file is passed to
@@ -148,9 +101,9 @@ use_scan_toml() {
   local pkg="$1" new="$2" target native
   if [ -n "$(scan_config_url "$pkg")" ]; then
     native="$(to_native_path "$(cd "$(dirname "$new")" && pwd -P)/$(basename "$new")")"
-    protect "$pkg/Ballerina.toml"
     target="$(mktemp "$WORK/Ballerina.toml.XXXXXX")"
     with_config_path "$pkg/Ballerina.toml" "$native" > "$target"
+    protect "$pkg/Ballerina.toml" "$(sha256_of "$target")"
     cp "$target" "$pkg/Ballerina.toml"
     rm -f "$target"
     # find-packages.sh checked that the line can be changed. This catches a file changed since.
@@ -159,7 +112,7 @@ use_scan_toml() {
   else
     target="$(scan_toml_path "$pkg")"
     [ -n "$target" ] || target="$pkg/Scan.toml"
-    protect "$target"
+    protect "$target" "$(sha256_of "$new")"
     cp "$new" "$target"
     rm -f "$new"
   fi
@@ -177,7 +130,9 @@ run_bal_scan() {
 }
 
 : > "$WORK/sonarqube-uploads.jsonl"
+: > "$WORK/sonarqube-failures.txt"
 FAILED=()
+SONAR_FAILED=()
 INDEX=0
 while IFS= read -r unit; do
   path="$(jq -r '.path' <<< "$unit")"
@@ -256,9 +211,9 @@ while IFS= read -r unit; do
     dashboard="$(read_property "$task_file" dashboardUrl | sed 's/\\:/:/g')"
     restore_files
     if [ "$status" -ne 0 ]; then
-      FAILED+=("$path: reporting to SonarQube failed, bal scan exited with code $status")
+      SONAR_FAILED+=("$path: reporting to SonarQube failed, bal scan exited with code $status")
     elif [ -z "$task_id" ]; then
-      FAILED+=("$path: reporting to SonarQube failed, since SonarScanner did not submit the analysis. See the SonarScanner output above")
+      SONAR_FAILED+=("$path: reporting to SonarQube failed, since SonarScanner did not submit the analysis. See the SonarScanner output above")
     else
       jq -nc --argjson s "$settings" --arg url "$dashboard" --arg task "$task_id" \
         '{package: $s.package, "project-key": $s."project-key", "dashboard-url": $url, "task-id": $task}' \
@@ -271,8 +226,16 @@ done < <(jq -c '.[]' "$WORK/units.json")
 jq -sc '.' "$WORK/sonarqube-uploads.jsonl" > "$WORK/sonarqube-uploads.json"
 
 if [ "${#FAILED[@]}" -gt 0 ]; then
-  for f in "${FAILED[@]}"; do log_error "$f."; done
+  for f in "${FAILED[@]}" "${SONAR_FAILED[@]+"${SONAR_FAILED[@]}"}"; do log_error "$f."; done
   die "bal scan failed for ${#FAILED[@]} of $INDEX package(s), so no SARIF file was produced."
+fi
+
+# SonarQube is one destination. Its failures do not stop the SARIF file from being produced and
+# sent to the other platforms: report.sh fails the step at the end.
+if [ "${#SONAR_FAILED[@]}" -gt 0 ]; then
+  printf '%s.\n' "${SONAR_FAILED[@]}" > "$WORK/sonarqube-failures.txt"
+  echo "Reporting to SonarQube failed for ${#SONAR_FAILED[@]} package(s). The SARIF file is still produced, and the step fails at the end:"
+  printf '  %s.\n' "${SONAR_FAILED[@]}"
 fi
 
 # A workspace counts as the packages it holds.

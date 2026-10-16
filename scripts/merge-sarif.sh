@@ -31,7 +31,18 @@ SAFE_CATEGORY="$(tr -c 'A-Za-z0-9._-' '_' <<< "$(trim "${CATEGORY:-bal-scan}")" 
 SARIF="$WORK/$SAFE_CATEGORY.sarif"
 FILES=()
 for ((i = 0; i < INDEX; i++)); do FILES+=("$WORK/normalized/$i.sarif"); done
-jq -s -f "$SCRIPT_DIR/merge-sarif.jq" "${FILES[@]}" > "$SARIF"
+# The merged run keeps plain paths, which the findings and annotations use. The SARIF file gets
+# them percent-encoded, as SARIF URIs.
+MERGED="$WORK/merged.sarif"
+jq -s -f "$SCRIPT_DIR/merge-sarif.jq" "${FILES[@]}" > "$MERGED"
+jq -L "$SCRIPT_DIR" '
+  include "common";
+  .runs |= map(
+    (if .artifacts then .artifacts |= map(if (.location.uri | type) == "string" then .location.uri |= uri_path else . end) else . end)
+    | .results |= map(
+      (if .locations then .locations |= map(map_uri(uri_path)) else . end)
+      | (if .relatedLocations then .relatedLocations |= map(map_uri(uri_path)) else . end)))
+' "$MERGED" > "$SARIF"
 
 jq -L "$SCRIPT_DIR" '
   include "common";
@@ -46,7 +57,7 @@ jq -L "$SCRIPT_DIR" '
       column: (.locations[0].physicalLocation.region.startColumn // null),
       "end-column": (.locations[0].physicalLocation.region.endColumn // null)
     } | select(.severity != "none")]
-' "$SARIF" > "$WORK/findings.json"
+' "$MERGED" > "$WORK/findings.json"
 
 count() { jq --arg s "$1" '[.[] | select(.severity == $s)] | length' "$WORK/findings.json"; }
 HIGH="$(count high)"

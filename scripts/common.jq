@@ -18,6 +18,16 @@ def excluded($globs):
 def join_path($dir; $path):
   if $dir == "." or $dir == "" then $path else "\($dir)/\($path)" end;
 
+# Applies f to the artifactLocation.uri of a SARIF location, when it has one.
+def map_uri(f):
+  if (.physicalLocation.artifactLocation.uri | type) == "string" then .physicalLocation.artifactLocation.uri |= f else . end;
+
+# Percent-encodes a relative path for a SARIF URI, one segment at a time, so that spaces and
+# other reserved characters are valid and "/" still separates the segments. Absolute URIs are left
+# as they are.
+def uri_path:
+  if test("^(/|[A-Za-z][A-Za-z0-9+.-]*:)") then . else split("/") | map(@uri) | join("/") end;
+
 # Escapes a string for use inside a regex.
 def regex_escape:
   gsub("(?<c>[.+*?^$(){}|\\[\\]\\\\])"; "\\\(.c)");

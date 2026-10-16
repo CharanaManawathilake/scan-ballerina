@@ -1,0 +1,4 @@
+[
+  {"path": "services/my api", "kind": "package", "members": []},
+  {"path": "ws", "kind": "workspace", "members": ["a"]}
+]

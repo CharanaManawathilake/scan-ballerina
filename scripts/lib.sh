@@ -20,6 +20,15 @@ PINNED_SONAR_PLUGIN_VERSION="0.3.0"
 MIN_SONAR_PLUGIN_VERSION="0.3.0"
 SONAR_PLUGIN_URL="https://maven.pkg.github.com/ballerina-platform/sonar-ballerina/io/ballerina/sonar/sonar-platform-plugin/{version}/sonar-platform-plugin-{version}.jar"
 
+# The SHA-256 of each platform plugin version this release can verify, including the pinned one.
+# The plugin runs with the SonarQube token, so a downloaded JAR must match before it is used.
+sonar_plugin_sha256() {
+  case "$1" in
+    0.3.0) echo b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5 ;;
+    *) return 1 ;;
+  esac
+}
+
 # The SonarScanner CLI an action release pins, with the SHA-256 of each distribution. Each one
 # bundles its own Java runtime.
 PINNED_SONAR_SCANNER_VERSION="8.1.0.6389"
@@ -304,4 +313,135 @@ tool_cache_dir() {
   dir="$(to_unix_path "${RUNNER_TEMP:-${TMPDIR:-/tmp}}")/scan-ballerina-tools"
   mkdir -p "$dir"
   printf '%s' "$dir"
+}
+
+# Prints a Scan.toml without its [[platform]] entries: all of them with "all", or only the
+# sonarqube ones with "sonarqube". This is line-based text editing, so the rest of the file keeps
+# its bytes, comments and layout. An entry runs until the next table header that is not one of
+# its sub-tables, such as [platform.<name>], so a removed entry takes its sub-tables with it.
+# Entries in other forms, such as an array of inline tables, are not seen, so callers check the
+# result with scan_toml_platforms.
+drop_platforms() {
+  awk -v mode="$1" '
+    function flush() { if (!drop) printf "%s", buf; buf = ""; drop = 0; inplat = 0 }
+    /^[[:space:]]*\[/ {
+      if ($0 ~ /^[[:space:]]*\[\[[[:space:]]*platform[[:space:]]*\]\]/) {
+        if (inplat) flush()
+        inplat = 1; insub = 0; drop = (mode == "all")
+      } else if ($0 ~ /^[[:space:]]*\[\[?[[:space:]]*platform[[:space:]]*\./) {
+        if (!inplat) { inplat = 1; drop = (mode == "all") }
+        insub = 1
+      } else if (inplat) {
+        flush()
+      }
+    }
+    inplat {
+      buf = buf $0 "\n"
+      if (!insub && mode == "sonarqube" && $0 ~ /^[[:space:]]*name[[:space:]]*=[[:space:]]*["\047]sonarqube["\047]/) drop = 1
+      next
+    }
+    { print }
+    END { if (inplat) flush() }
+  '
+}
+
+# Prints why the [[platform]] entries of a Scan.toml file ($1) cannot be hidden, or nothing when
+# they can or the file is not valid TOML, which bal scan reports itself. $2 is the name to use in
+# the message, such as the URL of a remote file.
+platform_form_problem() {
+  local file="$1" name="$2" left
+  scan_toml_platforms "$file" > /dev/null || return 0
+  if ! left="$(drop_platforms all < "$file" | yq -p toml -o json -I0 '.platform // [] | length' 2> /dev/null)"; then
+    echo "'$name' cannot have its [[platform]] entries hidden without breaking the file, for example because a multi-line string holds a line that starts with '['. Move such values out of the file."
+  elif [ "$(tr -d '\r' <<< "$left")" != 0 ]; then
+    echo "'$name' has [[platform]] entries in a form the action cannot hide, such as an array of inline tables. Write each entry as a [[platform]] table."
+  fi
+  return 0
+}
+
+# Files changed during a scan are recorded in a journal before they are changed: a copy of each
+# existing file, and the SHA-256 of what the action writes. scan.sh restores them as soon as each
+# scan ends. A run that is cancelled, or whose runner stops, may not get to do that, so the next
+# run in the same workspace restores them with recover_files. The journal is kept in the git
+# directory of the repository, which git status does not show and git clean leaves alone, and in
+# the work directory when there is none, where no later run finds it.
+journal_dir() {
+  local dir
+  dir="$(git -C "$(workspace_root)" rev-parse --path-format=absolute --git-path scan-ballerina 2> /dev/null | tr -d '\r')" || dir=""
+  [ -n "$dir" ] || dir="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}/journal"
+  to_unix_path "$dir"
+}
+
+JOURNAL=""
+journal_init() {
+  JOURNAL="$(journal_dir)"
+  mkdir -p "$JOURNAL"
+  touch "$JOURNAL/manifest.tsv"
+}
+
+# Keeps path $1 as it is now until restore_files runs: an existing file is copied to the journal
+# and copied back byte for byte, and a path that does not exist yet is deleted. An existing
+# directory is left as it is. $2 is the SHA-256 of what the action is about to write to the path,
+# empty when another program writes it, such as SonarScanner.
+protect() {
+  local path="$1" written="${2:-}" backup=""
+  [ -d "$path" ] && return 0
+  if [ -e "$path" ]; then
+    backup="$(mktemp "$JOURNAL/backup.XXXXXX")"
+    cp "$path" "$backup"
+  fi
+  # Empty fields are written as "-", since read joins consecutive tabs.
+  printf '%s\t%s\t%s\n' "$path" "${backup:--}" "${written:--}" >> "$JOURNAL/manifest.tsv"
+}
+
+# Reads one journal line into original, backup and written, with "-" read back as empty.
+read_journal_line() {
+  IFS=$'\t' read -r original backup written || return 1
+  [ "$backup" != - ] || backup=""
+  [ "$written" != - ] || written=""
+}
+
+# Restores every path in the journal of this run.
+restore_files() {
+  local original backup written
+  [ -n "$JOURNAL" ] && [ -f "$JOURNAL/manifest.tsv" ] || return 0
+  while read_journal_line; do
+    [ -n "$original" ] || continue
+    if [ -n "$backup" ]; then
+      cp "$backup" "$original" && rm -f "$backup"
+    else
+      rm -rf "$original"
+    fi
+  done < "$JOURNAL/manifest.tsv"
+  : > "$JOURNAL/manifest.tsv"
+}
+
+# Restores the files an earlier run left changed because it stopped before restoring them. A file
+# the action wrote is restored only while it still holds what the action wrote, so a change made
+# since, such as by a checkout, is kept. Paths are relative to the repository root.
+recover_files() {
+  local journal original backup written current
+  journal="$(journal_dir)"
+  [ -s "$journal/manifest.tsv" ] || return 0
+  log_warning "An earlier run of the action stopped before it restored the files it changed during a scan, for example because it was cancelled. Restoring them now."
+  while read_journal_line; do
+    [ -n "$original" ] || continue
+    current=""
+    [ -f "$original" ] && current="$(sha256_of "$original")"
+    if [ -n "$written" ] && [ "$current" != "$written" ]; then
+      # Either the change never happened, or the file changed again since.
+      if [ -n "$current" ] && [ -n "$backup" ] && [ -f "$backup" ] && [ "$current" = "$(sha256_of "$backup")" ]; then
+        continue
+      fi
+      [ -z "$current" ] && [ -z "$backup" ] && continue
+      log_warning "Left '$original' as it is, since it changed after the earlier run changed it."
+    elif [ -n "$backup" ] && [ -f "$backup" ]; then
+      cp "$backup" "$original"
+      echo "Restored $original"
+    elif [ -z "$backup" ] && [ -e "$original" ]; then
+      rm -rf "$original"
+      echo "Deleted $original, which the earlier run created"
+    fi
+  done < "$journal/manifest.tsv"
+  rm -rf "$journal"
 }
