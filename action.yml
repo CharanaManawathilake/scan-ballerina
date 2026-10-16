@@ -208,7 +208,7 @@ runs:
     - name: Upload to GitHub code scanning
       id: upload
       if: steps.validate.outputs.github-code-scanning == 'true' && steps.merge.outputs.sarif-file != ''
-      uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      uses: github/codeql-action/upload-sarif@v4.38.3
       with:
         sarif_file: ${{ steps.merge.outputs.sarif-file }}
         category: ${{ inputs.category }}
@@ -218,7 +218,7 @@ runs:
     - name: Save the SARIF file as an artifact
       id: artifact
       if: ${{ !cancelled() && steps.validate.outputs.artifacts == 'true' && steps.merge.outputs.sarif-file != '' }}
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      uses: actions/upload-artifact@v7.0.2
       with:
         name: ${{ steps.validate.outputs.artifact-name }}
         path: ${{ steps.merge.outputs.sarif-file }}

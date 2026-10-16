@@ -236,7 +236,7 @@ The action needs `jq` and `yq` (v4), which GitHub-hosted runners provide. It run
 
 ## Security
 
-- `setup-ballerina` is pinned by tag, `upload-sarif` and `upload-artifact` by commit SHA, and the scan tool and the SonarQube platform plugin by version. The SonarScanner CLI is downloaded from SonarSource at a pinned version, and its SHA-256 is verified.
+- `setup-ballerina`, `upload-sarif` and `upload-artifact` are pinned by release tag, and the scan tool and the SonarQube platform plugin by version. The SonarScanner CLI is downloaded from SonarSource at a pinned version, and its SHA-256 is verified.
 - Inputs reach the scripts as environment variables and are never interpolated into scripts.
 - Every `token` in `platform-config`, at the platform level and under each `packages` item, is masked, and `platform-config` is never printed. Each package's token goes to that package's scan only.
 - The action needs only `contents: read`. With `github-code-scanning`, it also needs `security-events: write`, and `actions: read` in private repositories. With `sonarqube` and the default plugin, it also needs `packages: read`.
