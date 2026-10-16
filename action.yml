@@ -156,7 +156,7 @@ runs:
     - name: Set up Ballerina
       id: setup-ballerina
       if: steps.find.outputs.count != '0' && steps.bal.outputs.installed != 'true'
-      uses: ballerina-platform/setup-ballerina@585120e3f0e540bf127376ee6e75d39e8ce6aaa4 # v1.1.5
+      uses: ballerina-platform/setup-ballerina@v1.1.5
       with:
         version: ${{ inputs.ballerina-version }}
         github-token: ${{ inputs.github-token }}
