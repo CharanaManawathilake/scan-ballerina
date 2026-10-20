@@ -1,0 +1,11 @@
+# Keeps the actions that action.yml and the test workflow use, pinned by commit SHA, up to date.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"

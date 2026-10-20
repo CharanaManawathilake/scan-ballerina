@@ -1,0 +1,11 @@
+[package]
+org = "scan_test"
+name = "remote_scan_toml"
+version = "0.1.0"
+distribution = "2201.13.5"
+
+[build-options]
+observabilityIncluded = false
+
+[scan]
+configPath = "https://localhost:8443/Scan.toml"

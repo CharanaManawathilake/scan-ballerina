@@ -1,0 +1,4 @@
+# The test job serves the platform plugin at this URL.
+[[platform]]
+name = "sonarqube"
+path = "https://localhost:8443/sonar-platform-plugin.jar"

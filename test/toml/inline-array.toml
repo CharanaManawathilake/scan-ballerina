@@ -1,0 +1,1 @@
+platform = [{ name = "sonarqube", path = "./sonar-platform-plugin.jar" }]

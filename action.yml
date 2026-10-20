@@ -1,0 +1,279 @@
+name: 'Scan Ballerina'
+description: 'Run bal scan on Ballerina packages and send the findings to GitHub code scanning, SonarQube or any SARIF consumer'
+author: 'WSO2'
+branding:
+  icon: 'shield'
+  color: 'green'
+
+inputs:
+  ballerina-version:
+    description: 'Ballerina version to install. latest uses the Ballerina already on the path, if there is one; any other version is installed unless it is the one on the path. Pin a version for reproducible runs.'
+    required: false
+    default: 'latest'
+  tool-version:
+    description: 'bal scan tool version. Empty uses the version pinned by this release of the action.'
+    required: false
+    default: ''
+  platforms:
+    description: 'Comma separated platforms to send the findings to: github-code-scanning, sonarqube. Empty produces the SARIF file only.'
+    required: false
+    default: ''
+  paths:
+    description: 'Newline or comma separated paths to scan. Every package and workspace in these paths, including their subdirectories, is scanned.'
+    required: false
+    default: '.'
+  exclude-paths:
+    description: 'Newline or comma separated globs, relative to the repository root, for packages and files to leave out. "*" stays within one directory and "**" crosses directories.'
+    required: false
+    default: ''
+  exclude-tests:
+    description: 'Drop findings in tests/ and modules/*/tests/.'
+    required: false
+    default: 'true'
+  category:
+    description: 'Name for this scan. Labels the uploaded findings, the job summary and messages. Use a different one for each scan in a job.'
+    required: false
+    default: 'bal-scan'
+  include-rules:
+    description: 'Comma separated rule IDs to report, such as ballerina:1,ballerina/crypto:1. Empty reports every rule.'
+    required: false
+    default: ''
+  exclude-rules:
+    description: 'Comma separated rule IDs to leave out, such as ballerina:1,ballerina:10.'
+    required: false
+    default: ''
+  fail-on-severity:
+    description: 'Fail when findings are at or above low, medium or high. none turns the gate off.'
+    required: false
+    default: 'none'
+  max-findings:
+    description: 'Findings at or above fail-on-severity allowed before the step fails.'
+    required: false
+    default: '0'
+  annotations:
+    description: 'Show each counted finding as a file and line annotation.'
+    required: false
+    default: 'false'
+  job-summary:
+    description: 'Write the result and the high, medium and low counts to the job summary.'
+    required: false
+    default: 'true'
+  artifacts:
+    description: 'Save the merged SARIF file as a workflow artifact named after the category and the job.'
+    required: false
+    default: 'false'
+  platform-config:
+    description: 'YAML mapping, keyed by platform, with the settings and credentials each selected platform needs. JSON is accepted.'
+    required: false
+    default: ''
+  github-token:
+    description: 'Token for installing Ballerina, downloading the SonarQube platform plugin from GitHub Packages and uploading to code scanning.'
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  result:
+    description: 'passed or failed from the gate, skipped when no package was found, or error when the step failed before the gate.'
+    value: ${{ steps.report.outputs.result }}
+  sarif-file:
+    description: 'The merged, normalized SARIF file. Empty when no package was found or a scan failed.'
+    value: ${{ steps.merge.outputs.sarif-file }}
+  high-count:
+    description: 'Number of high severity findings. 0 when no package was found, empty when the findings were not counted.'
+    value: ${{ steps.report.outputs.high-count }}
+  medium-count:
+    description: 'Number of medium severity findings. 0 when no package was found, empty when the findings were not counted.'
+    value: ${{ steps.report.outputs.medium-count }}
+  low-count:
+    description: 'Number of low severity findings. 0 when no package was found, empty when the findings were not counted.'
+    value: ${{ steps.report.outputs.low-count }}
+  total-count:
+    description: 'Sum of the high, medium and low counts. INFO findings are not counted. 0 when no package was found, empty when the findings were not counted.'
+    value: ${{ steps.report.outputs.total-count }}
+  packages-scanned:
+    description: 'Number of packages scanned, set once every package was scanned. 0 when no package was found, empty when a scan failed or did not run.'
+    value: ${{ steps.report.outputs.packages-scanned }}
+  uploads:
+    description: 'JSON object with one entry per platform the findings were sent to, and an artifact entry when the SARIF file was saved as an artifact. {} when nothing was uploaded.'
+    value: ${{ steps.report.outputs.uploads }}
+
+runs:
+  using: 'composite'
+  steps:
+    # Inputs reach the scripts as environment variables, never interpolated into run blocks.
+    - name: Install yq
+      id: yq
+      shell: bash
+      env:
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-yq.sh"
+
+    - name: Validate inputs
+      id: validate
+      shell: bash
+      env:
+        PLATFORMS: ${{ inputs.platforms }}
+        SCAN_PATHS: ${{ inputs.paths }}
+        EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        EXCLUDE_TESTS: ${{ inputs.exclude-tests }}
+        CATEGORY: ${{ inputs.category }}
+        INCLUDE_RULES: ${{ inputs.include-rules }}
+        EXCLUDE_RULES: ${{ inputs.exclude-rules }}
+        FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+        MAX_FINDINGS: ${{ inputs.max-findings }}
+        ANNOTATIONS: ${{ inputs.annotations }}
+        JOB_SUMMARY: ${{ inputs.job-summary }}
+        ARTIFACTS: ${{ inputs.artifacts }}
+        PLATFORM_CONFIG: ${{ inputs.platform-config }}
+        BALLERINA_VERSION: ${{ inputs.ballerina-version }}
+        TOOL_VERSION: ${{ inputs.tool-version }}
+        MATRIX: ${{ toJSON(matrix) }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/validate.sh"
+
+    - name: Find packages
+      id: find
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        SCAN_PATHS: ${{ inputs.paths }}
+        EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/find-packages.sh"
+
+    - name: Resolve SonarQube settings
+      id: sonarqube
+      if: steps.validate.outputs.sonarqube == 'true' && steps.find.outputs.count != '0'
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        PLATFORM_CONFIG: ${{ inputs.platform-config }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/check-sonarqube.sh"
+
+    # A bal already on the path is used for latest, or when it is the version asked for.
+    - name: Check for Ballerina
+      id: bal
+      if: steps.find.outputs.count != '0'
+      shell: bash
+      env:
+        BALLERINA_VERSION: ${{ inputs.ballerina-version }}
+      run: |
+        source "${GITHUB_ACTION_PATH//\\//}/scripts/lib.sh"
+        WANTED="$(trim "${BALLERINA_VERSION:-latest}")"
+        if bal_matches "$WANTED"; then
+          set_output installed true
+        else
+          has_bal && echo "Ballerina $(bal_version) is on the path, but ballerina-version is $WANTED, so Ballerina $WANTED is installed."
+          set_output installed false
+        fi
+
+    - name: Set up Ballerina
+      id: setup-ballerina
+      if: steps.find.outputs.count != '0' && steps.bal.outputs.installed != 'true'
+      uses: ballerina-platform/setup-ballerina@585120e3f0e540bf127376ee6e75d39e8ce6aaa4 # v1.1.5
+      with:
+        version: ${{ inputs.ballerina-version }}
+        github-token: ${{ inputs.github-token }}
+
+    - name: Install the scan tool
+      id: tool
+      if: steps.find.outputs.count != '0'
+      shell: bash
+      env:
+        TOOL_VERSION: ${{ inputs.tool-version }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-scan-tool.sh"
+
+    - name: Install SonarScanner and the platform plugin
+      id: sonarqube-tools
+      if: steps.validate.outputs.sonarqube == 'true' && steps.find.outputs.count != '0'
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-sonarqube.sh"
+
+    - name: Scan packages
+      id: scan
+      if: steps.find.outputs.count != '0'
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        SONARQUBE: ${{ steps.validate.outputs.sonarqube }}
+        SCANNER_BIN: ${{ steps.sonarqube-tools.outputs.scanner-bin }}
+        PLATFORM_CONFIG: ${{ inputs.platform-config }}
+        INCLUDE_RULES: ${{ inputs.include-rules }}
+        EXCLUDE_RULES: ${{ inputs.exclude-rules }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/scan.sh"
+
+    - name: Normalize and merge SARIF
+      id: merge
+      if: steps.find.outputs.count != '0'
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        EXCLUDE_TESTS: ${{ inputs.exclude-tests }}
+        EXCLUDE_PATHS: ${{ inputs.exclude-paths }}
+        CATEGORY: ${{ inputs.category }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/merge-sarif.sh"
+
+    - name: Upload to GitHub code scanning
+      id: upload
+      if: steps.validate.outputs.github-code-scanning == 'true' && steps.merge.outputs.sarif-file != ''
+      uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      with:
+        sarif_file: ${{ steps.merge.outputs.sarif-file }}
+        category: ${{ inputs.category }}
+        token: ${{ inputs.github-token }}
+
+    # Runs even when the upload to code scanning failed, so that the SARIF file is still saved.
+    - name: Save the SARIF file as an artifact
+      id: artifact
+      if: ${{ !cancelled() && steps.validate.outputs.artifacts == 'true' && steps.merge.outputs.sarif-file != '' }}
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.validate.outputs.artifact-name }}
+        path: ${{ steps.merge.outputs.sarif-file }}
+        if-no-files-found: error
+
+    - name: Report
+      id: report
+      if: always()
+      shell: bash
+      env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
+        CATEGORY: ${{ inputs.category }}
+        ANNOTATIONS: ${{ inputs.annotations }}
+        JOB_SUMMARY: ${{ inputs.job-summary }}
+        FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+        MAX_FINDINGS: ${{ inputs.max-findings }}
+        FAILED_STEP: >-
+          ${{
+            (steps.yq.outcome != 'success' && 'install yq') ||
+            (steps.validate.outcome != 'success' && 'validate the inputs') ||
+            (steps.find.outcome != 'success' && 'find packages') ||
+            (steps.sonarqube.outcome == 'failure' && 'resolve the SonarQube settings') ||
+            (steps.setup-ballerina.outcome == 'failure' && 'set up Ballerina') ||
+            (steps.tool.outcome == 'failure' && 'install the scan tool') ||
+            (steps.sonarqube-tools.outcome == 'failure' && 'install SonarScanner and the platform plugin') ||
+            (steps.scan.outcome == 'failure' && 'scan the packages') ||
+            (steps.merge.outcome == 'failure' && 'merge the SARIF reports') ||
+            (steps.upload.outcome == 'failure' && 'upload to GitHub code scanning') ||
+            (steps.artifact.outcome == 'failure' && 'save the SARIF file as an artifact') ||
+            ''
+          }}
+        UNIT_COUNT: ${{ steps.find.outputs.count }}
+        PACKAGES_SCANNED: ${{ steps.scan.outputs.packages }}
+        HIGH: ${{ steps.merge.outputs.high-count }}
+        MEDIUM: ${{ steps.merge.outputs.medium-count }}
+        LOW: ${{ steps.merge.outputs.low-count }}
+        TOTAL: ${{ steps.merge.outputs.total-count }}
+        SARIF_ID: ${{ steps.upload.outputs.sarif-id }}
+        ARTIFACT_NAME: ${{ steps.validate.outputs.artifact-name }}
+        ARTIFACT_ID: ${{ steps.artifact.outputs.artifact-id }}
+        ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        GCS_SKIPPED: ${{ steps.validate.outputs.github-code-scanning-skipped }}
+        SONARQUBE_SKIPPED: ${{ steps.validate.outputs.sonarqube-skipped }}
+      run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/report.sh"
