@@ -9,7 +9,7 @@ GitHub Action that runs [`bal scan`](https://ballerina.io/learn/scan-tool/) on t
 The action installs Ballerina and the scan tool, scans every package, and merges the reports into one SARIF 2.1.0 file with paths relative to the repository root. It leaves your files as they were: any file it changes during a scan is restored when that scan ends.
 
 > [!NOTE]
-> `v0` is a pre-release that uses scan tool 0.12.0. It tracks the latest `v0.x.y` release; pin a release tag such as `v0.1.0`, or a commit SHA, for reproducible runs. The inputs are stable, but `v1` will support scan tool 1.0.0 and later only, so `tool-version` values below 1.0.0 will not work with it. Rule IDs, severities and the findings reported may change with scan tool 1.0.0, so review `include-rules`, `exclude-rules`, `fail-on-severity` and `max-findings` when moving to `v1`.
+> `v0` is a pre-release. It tracks the latest `v0.x.y` release; pin a release tag such as `v0.1.0`, or a commit SHA, for reproducible runs. The inputs are stable. Unless `tool-version` is set, the action uses the latest scan tool compatible with the installed Ballerina, so a new scan tool release is picked up without a new action release. Set `tool-version` to keep the rule IDs, severities and findings that `include-rules`, `exclude-rules`, `fail-on-severity` and `max-findings` depend on fixed.
 
 ## Usage
 
@@ -146,8 +146,8 @@ The action's last inner step runs even when an earlier one failed, so `result` i
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `ballerina-version` | `latest` | Ballerina version to install. `latest` uses the Ballerina already on the path, if there is one; any other version is installed unless it is the one on the path. Pin a version for reproducible runs. |
-| `tool-version` | pinned per release | `bal scan` tool version. |
+| `ballerina-version` | `latest` | Ballerina version to install, `2201.13.0` or later. `latest` uses the Ballerina already on the path if it is `2201.13.0` or later, and installs the latest Ballerina otherwise; any other version is installed unless it is the one on the path. Pin a version for reproducible runs. |
+| `tool-version` | latest compatible | `bal scan` tool version, `0.12.0` or later. Empty uses the latest version compatible with the Ballerina version. A version that does not support the Ballerina version fails the step. |
 | `platforms` | empty | Comma separated platforms to send the findings to: `github-code-scanning`, `sonarqube`. Empty produces the SARIF file only. |
 | `paths` | `.` | Newline or comma separated paths to scan. Every package and workspace in these paths, including their subdirectories, is scanned, and their findings are merged into one SARIF file. A path that does not exist fails the step. |
 | `exclude-paths` | empty | Newline or comma separated globs, relative to the repository root, for packages and files to leave out. A directory excludes everything below it. `*` stays within one directory and `**` crosses directories. |
@@ -194,7 +194,7 @@ The fields at the platform level are the defaults for every scanned package. An 
 | Field | Required | Description |
 | --- | --- | --- |
 | `plugin-path` | No | Platform plugin JAR, as a path relative to the repository root or an `https` URL. Overrides `path` in `Scan.toml`. Cannot be used with `plugin-version`. |
-| `plugin-version` | No | Platform plugin version to download, `0.3.0` or later, or `latest`. Overrides `path` in `Scan.toml`. `latest` warns, since it may not match the pinned scan tool. |
+| `plugin-version` | No | Platform plugin version to download, `0.3.0` or later, or `latest`. Overrides `path` in `Scan.toml`. A version this release knows fails when it does not work with the installed scan tool. `latest` warns, since it may not match the scan tool. |
 | `properties-file` | No | Properties file, relative to the repository root. Overrides `sonarProjectPropertiesPath` in `Scan.toml`. |
 | `host-url` | Yes, unless set under `packages` or in the properties file | SonarQube server URL. Must be `https`. Overrides `sonar.host.url`. |
 | `token` | Yes, unless set under `packages` | Token for submitting analyses. Pass it from a secret. |
@@ -204,7 +204,7 @@ The fields at the platform level are the defaults for every scanned package. An 
 
 Each setting of a package is resolved field by field: its `packages` item, then the platform level, then the package's `Scan.toml` and properties file. Paths in `platform-config` are relative to the repository root, and paths in `Scan.toml` are relative to the package.
 
-- **Platform plugin:** `plugin-path` or `plugin-version`, otherwise the `path` of the `sonarqube` `[[platform]]` entry in `Scan.toml` (a relative path or an `https` URL), otherwise the version this release pins. An absolute path fails, since it points to one machine. A `plugin-path` or `plugin-version` in an item replaces both platform-level fields.
+- **Platform plugin:** `plugin-path` or `plugin-version`, otherwise the `path` of the `sonarqube` `[[platform]]` entry in `Scan.toml` (a relative path or an `https` URL), otherwise the newest version this release knows to work with the installed scan tool. An absolute path fails, since it points to one machine. A `plugin-path` or `plugin-version` in an item replaces both platform-level fields.
 - **Properties file:** `properties-file`, otherwise `sonarProjectPropertiesPath` in `Scan.toml`, otherwise `sonar-project.properties` in the package root, if it exists.
 - **Server and token:** an item that sets `host-url` must also set `token`, so a token is never sent to a server it was not configured for. For the same reason, a package that takes its server URL from `sonar.host.url` in its properties file must set its own `token` under `packages`: the platform-level token goes only to a `host-url` in `platform-config`. Every URL must be `https`, including one from the properties file.
 - **Project:** each package is a separate SonarQube analysis, so packages on the same server need different project keys. `project-key` and `project-name` at the platform level are for a scan of one package, counted after `exclude-paths`: with more packages they fail, so set them for each package under `packages`. With one package, setting the same field at the platform level and in its item also fails.
@@ -279,8 +279,8 @@ The action is a composite action. Its logic is in the shell and `jq` scripts in 
 1. `install-yq.sh` installs `yq` when the runner has no `yq` v4, as on Windows runners. `validate.sh` checks the inputs.
 2. `find-packages.sh` finds the packages and workspaces in `paths`, skipping `target`, `build` and `.git`. A workspace is scanned once from its root. It checks each package's `Scan.toml` setting, and downloads a remote `Scan.toml`.
 3. `check-sonarqube.sh` resolves each package's SonarQube settings.
-4. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) installs Ballerina, unless `bal` is already on the path and `ballerina-version` is `latest` or the version of that `bal`. On Linux, a Ballerina installed from a `.deb` package is removed first, since `dpkg` cannot install another version over it.
-5. `install-scan-tool.sh` installs the scan tool, unless that version is already active. With SonarQube, `install-sonarqube.sh` downloads the platform plugin and the SonarScanner CLI, once per job.
+4. [`setup-ballerina`](https://github.com/ballerina-platform/setup-ballerina) installs Ballerina, unless `bal` is already on the path and `ballerina-version` is its version, or `latest` with a `bal` of `2201.13.0` or later. On Linux, a Ballerina installed from a `.deb` package is removed first, since `dpkg` cannot install another version over it.
+5. `install-scan-tool.sh` installs the scan tool: the `tool-version` given, or else the latest version compatible with the installed Ballerina, which Ballerina Central picks and the action asks for once per Ballerina version in a job. It is pulled only when it is missing, and made active when another version is. With SonarQube, `install-sonarqube.sh` downloads the platform plugin, checked against the installed scan tool, and the SonarScanner CLI, once per job.
 6. `scan.sh` runs `bal scan --format=sarif` on each package, and with SonarQube `bal scan --platforms=sonarqube`.
 7. `merge-sarif.sh` normalizes the paths, drops filtered findings and merges the reports into one run.
 8. `github/codeql-action/upload-sarif` uploads the SARIF file to code scanning.
@@ -301,7 +301,7 @@ The action runs on GitHub-hosted Ubuntu, macOS and Windows runners, where it use
 
 ## Security
 
-- `setup-ballerina`, `upload-sarif` and `upload-artifact` are pinned by full commit SHA, which Dependabot keeps up to date, and the scan tool by version. `yq`, when the runner has none, and the SonarQube platform plugin and the SonarScanner CLI are downloaded at the versions this release pins, and their SHA-256 is verified. A `plugin-version` this release has no checksum for, and a plugin given as an `https` URL, are downloaded with a warning, since they cannot be verified.
+- `setup-ballerina`, `upload-sarif` and `upload-artifact` are pinned by full commit SHA, which Dependabot keeps up to date. The scan tool is the latest version compatible with the Ballerina version unless `tool-version` pins one. `yq`, when the runner has none, the SonarQube platform plugin and the SonarScanner CLI are downloaded at versions this release knows, and their SHA-256 is verified. A `plugin-version` this release has no checksum for, and a plugin given as an `https` URL, are downloaded with a warning, since they cannot be verified.
 - Inputs reach the scripts as environment variables and are never interpolated into scripts.
 - Every `token` in `platform-config`, at the platform level and under each `packages` item, is masked, and `platform-config` is never printed. Each package's token goes to that package's scan only.
 - The action needs only `contents: read`. With `github-code-scanning`, it also needs `security-events: write`, and `actions: read` in private repositories. With `sonarqube` and the default plugin, it also needs `packages: read`.
