@@ -55,6 +55,10 @@ if [ -z "$WANTED" ]; then
   HINT="Ballerina Central picked it as the latest version compatible with Ballerina $BAL_VERSION. Set tool-version to install a given version."
 fi
 
+NEEDED="$(tool_min_ballerina "$WANTED")"
+version_ge "$BAL_VERSION" "$NEEDED" \
+  || die "bal scan $WANTED needs Ballerina $NEEDED or later, but Ballerina $BAL_VERSION is installed. Set ballerina-version to $NEEDED or later, or set tool-version to an older scan tool that supports Ballerina $BAL_VERSION."
+
 if [ "$ACTIVE" != "$WANTED" ]; then
   echo "::group::Install bal scan $WANTED"
   # 'bal tool use' switches to a version that is already pulled. 'bal tool pull' fails for one

@@ -10,8 +10,36 @@
 set -euo pipefail
 
 # The oldest supported scan tool, and the oldest Ballerina that runs it.
-MIN_TOOL_VERSION="0.12.0"
-MIN_BALLERINA_VERSION="2201.13.0"
+MIN_TOOL_VERSION="0.11.0"
+MIN_BALLERINA_VERSION="2201.12.0"
+
+# The oldest Ballerina each scan tool needs, newest first: the first scan tool version of a range,
+# and the Ballerina update it was built with. A scan tool runs on that update and later ones.
+TOOL_BALLERINA_VERSIONS="\
+0.12.0 2201.13.0
+0.11.0 2201.12.0
+"
+
+# The first Ballerina with workspaces, and the first scan tool that scans them. Older scan tools
+# load only packages.
+MIN_WORKSPACE_BALLERINA_VERSION="2201.13.0"
+MIN_WORKSPACE_TOOL_VERSION="0.12.0"
+
+# Prints the oldest Ballerina that runs scan tool version $1, or that runs any supported scan tool
+# when $1 is empty.
+tool_min_ballerina() {
+  local tool ballerina
+  if [ -n "$1" ]; then
+    while read -r tool ballerina; do
+      [ -n "$tool" ] || continue
+      if version_ge "$1" "$tool"; then
+        printf '%s' "$ballerina"
+        return
+      fi
+    done <<< "$TOOL_BALLERINA_VERSIONS"
+  fi
+  printf '%s' "$MIN_BALLERINA_VERSION"
+}
 
 # The Central API 'bal tool pull scan' uses to pick the latest scan tool for a Ballerina version.
 CENTRAL_TOOLS_URL="https://api.central.ballerina.io/2.0/registry/tools"
@@ -25,7 +53,7 @@ SONAR_PLUGIN_URL="https://maven.pkg.github.com/ballerina-platform/sonar-ballerin
 # Known plugin versions, newest first: version, oldest scan tool it works with, first scan tool it
 # is not known to work with, and the SHA-256 a download must match.
 SONAR_PLUGINS="\
-0.3.0 0.12.0 0.13.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
+0.3.0 0.11.0 0.13.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
 "
 
 # Prints the SHA-256 of platform plugin version $1, failing when this release does not know it.
@@ -218,14 +246,15 @@ bal_version() {
 }
 
 # Succeeds when the bal on the path can be used for ballerina-version $1: latest, a version, or a
-# prefix of one, such as 2201.13.
+# prefix of one, such as 2201.13. For latest, it must be Ballerina $2 or later, by default the
+# oldest Ballerina that runs a supported scan tool.
 bal_matches() {
   local current
   has_bal || return 1
   current="$(bal_version)"
   [ -n "$current" ] || return 1
   if [ "$1" = latest ]; then
-    version_ge "$current" "$MIN_BALLERINA_VERSION"
+    version_ge "$current" "${2:-$MIN_BALLERINA_VERSION}"
   else
     [ "$current" = "$1" ] || [[ "$current" == "$1".* ]]
   fi

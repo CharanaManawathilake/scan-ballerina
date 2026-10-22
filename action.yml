@@ -7,11 +7,11 @@ branding:
 
 inputs:
   ballerina-version:
-    description: 'Ballerina version to install, 2201.13.0 or later. latest uses the Ballerina already on the path if it is 2201.13.0 or later, and installs the latest Ballerina otherwise; any other version is installed unless it is the one on the path. Pin a version for reproducible runs.'
+    description: 'Ballerina version to install, 2201.12.0 or later. latest uses the Ballerina already on the path if it can run the scan tool, and installs the latest Ballerina otherwise; any other version is installed unless it is the one on the path. Pin a version for reproducible runs.'
     required: false
     default: 'latest'
   tool-version:
-    description: 'bal scan tool version, 0.12.0 or later. Empty uses the latest version compatible with the Ballerina version.'
+    description: 'bal scan tool version, 0.11.0 or later. Workspaces need 0.12.0 or later. Empty uses the latest version compatible with the Ballerina version.'
     required: false
     default: ''
   platforms:
@@ -158,10 +158,14 @@ runs:
       shell: bash
       env:
         BALLERINA_VERSION: ${{ inputs.ballerina-version }}
+        TOOL_VERSION: ${{ inputs.tool-version }}
       run: |
         source "${GITHUB_ACTION_PATH//\\//}/scripts/lib.sh"
         WANTED="$(trim "${BALLERINA_VERSION:-latest}")"
-        if bal_matches "$WANTED"; then
+        TOOL="the scan tool"
+        [ -z "$(trim "${TOOL_VERSION:-}")" ] || TOOL="bal scan $(trim "$TOOL_VERSION")"
+        NEEDED="$(tool_min_ballerina "$(trim "${TOOL_VERSION:-}")")"
+        if bal_matches "$WANTED" "$NEEDED"; then
           set_output installed true
         else
           CURRENT=""
@@ -171,7 +175,7 @@ runs:
           if has_bal && [ -z "$CURRENT" ]; then
             echo "A bal command is on the path, but its version could not be read from 'bal version', so $INSTALLED is installed."
           elif has_bal && [ "$WANTED" = latest ]; then
-            echo "Ballerina $CURRENT is on the path, but the scan tool needs $MIN_BALLERINA_VERSION or later, so the latest Ballerina is installed."
+            echo "Ballerina $CURRENT is on the path, but $TOOL needs $NEEDED or later, so the latest Ballerina is installed."
           elif has_bal; then
             echo "Ballerina $CURRENT is on the path, but ballerina-version is $WANTED, so Ballerina $WANTED is installed."
           fi
@@ -214,6 +218,8 @@ runs:
       env:
         SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         SONARQUBE: ${{ steps.validate.outputs.sonarqube }}
+        SCAN_BALLERINA_VERSION: ${{ steps.tool.outputs.ballerina-version }}
+        SCAN_TOOL_VERSION: ${{ steps.tool.outputs.tool-version }}
         SCANNER_BIN: ${{ steps.sonarqube-tools.outputs.scanner-bin }}
         PLATFORM_CONFIG: ${{ inputs.platform-config }}
         INCLUDE_RULES: ${{ inputs.include-rules }}
