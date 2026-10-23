@@ -193,6 +193,17 @@ jobs:
           paths: test/projects/single
           category: mismatched-versions
 
+      # latest is the latest release, not the latest one compatible with the Ballerina version.
+      - name: Ballerina version below the one the latest scan tool needs
+        id: latest-tool-version
+        continue-on-error: true
+        uses: ./
+        with:
+          ballerina-version: 2201.12.0
+          tool-version: latest
+          paths: test/projects/single
+          category: latest-tool-version
+
       - name: Check that the steps failed before installing anything
         shell: bash
         env:
@@ -201,7 +212,7 @@ jobs:
           set -euo pipefail
           FAILURES=0
           fail() { echo "::error::$1"; FAILURES=$((FAILURES + 1)); }
-          for id in old-tool-version old-ballerina-version mismatched-versions; do
+          for id in old-tool-version old-ballerina-version mismatched-versions latest-tool-version; do
             outcome="$(jq -r --arg id "$id" '.[$id].outcome' <<< "$STEPS")"
             result="$(jq -r --arg id "$id" '.[$id].outputs.result // ""' <<< "$STEPS")"
             sarif="$(jq -r --arg id "$id" '.[$id].outputs["sarif-file"] // ""' <<< "$STEPS")"
@@ -218,6 +229,26 @@ jobs:
         with:
           version: 2201.12.0
           github-token: ${{ github.token }}
+
+      # Only tool-version is given, and the bal on the path can run it, so it is used.
+      - name: Scan with a compatible Ballerina on the path
+        id: compatible-bal-on-path
+        uses: ./
+        with:
+          tool-version: 0.11.0
+          paths: test/projects/single
+          category: compatible-bal-on-path
+
+      - name: Check that the Ballerina on the path was used
+        shell: bash
+        env:
+          RESULT: ${{ steps.compatible-bal-on-path.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          bal version | grep -q '^Ballerina 2201\.12\.0 ' || fail "Ballerina 2201.12.0 on the path must be used"
+          bal tool list | grep -Eq '^\|scan +\|0\.11\.0 ' || fail "bal scan 0.11.0 is not the active tool version"
 
       # Only tool-version is given, and the bal on the path is too old for it, so the latest
       # Ballerina is installed.
@@ -288,6 +319,43 @@ jobs:
           bal tool list | grep -Eq '^\|scan +\|0\.12\.0 ' || fail "bal scan 0.12.0 is not the active tool version"
           [ "$(cat "$RUNNER_TEMP/scan-ballerina-tools/scan-tool-for-ballerina-2201.13.0")" = 0.12.0 ] \
             || fail "The version Central picked was not kept in the tool cache"
+
+  # latest is the latest release of each, even when the bal on the path can run every scan tool.
+  latest-keyword:
+    name: Ballerina and scan tool versions set to latest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up an older Ballerina
+        uses: ballerina-platform/setup-ballerina@585120e3f0e540bf127376ee6e75d39e8ce6aaa4 # v1.1.5
+        with:
+          version: 2201.13.0
+          github-token: ${{ github.token }}
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          ballerina-version: latest
+          tool-version: latest
+          paths: test/projects/single
+
+      - name: Check the versions
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          LATEST_BAL="$(gh release view --repo ballerina-platform/ballerina-distribution --json tagName --jq '.tagName | ltrimstr("v")')"
+          LATEST_TOOL="$(curl -fsSL https://api.central.ballerina.io/2.0/registry/packages/ballerina/tool_scan \
+            | jq -r '.[]' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
+          echo "Latest: Ballerina $LATEST_BAL, bal scan $LATEST_TOOL"
+          bal version | grep -q "^Ballerina ${LATEST_BAL//./\\.} " || fail "Ballerina $LATEST_BAL is not the installed version"
+          bal tool list | grep -Eq "^\|scan +\|${LATEST_TOOL//./\\.} " || fail "bal scan $LATEST_TOOL is not the active tool version"
 
   operating-systems:
     name: Scan on ${{ matrix.os }}
