@@ -18,10 +18,16 @@ BAL_VERSION="$(bal_version)"
 version_ge "$BAL_VERSION" "$MIN_BALLERINA_VERSION" \
   || die "bal scan $MIN_TOOL_VERSION and later need Ballerina $MIN_BALLERINA_VERSION or later, but Ballerina $BAL_VERSION is installed. Set ballerina-version to $MIN_BALLERINA_VERSION or later, or update the Ballerina setup step before this action."
 
+# Prints the active scan tool version. Before Ballerina 2201.13, 'bal tool list' lists every pulled
+# version and marks the active one with "*"; later ones list only the active version, unmarked.
 active_version() {
   bal_cmd tool list 2> /dev/null | tr -d '\r' \
-    | awk -F'|' '$2 ~ /^[[:space:]]*scan[[:space:]]*$/ { if (match($3, /[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*/)) print substr($3, RSTART, RLENGTH) }' \
-    | head -n1
+    | awk -F'|' '$2 ~ /^[[:space:]]*scan[[:space:]]*$/ && match($3, /[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*/) {
+        v = substr($3, RSTART, RLENGTH)
+        if ($3 ~ /\*/) active = v
+        else if (first == "") first = v
+      }
+      END { print (active != "" ? active : first) }'
 }
 
 WANTED="$(trim "${TOOL_VERSION:-}")"

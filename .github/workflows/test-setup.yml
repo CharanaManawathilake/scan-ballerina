@@ -30,7 +30,7 @@ jobs:
           at_least() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
           BAL="$(bal version | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p')"
-          TOOL="$(bal tool list | grep -E '^\|scan +\|' | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+          TOOL="$(bash .github/scripts/active-scan-tool.sh)"
           echo "Ballerina $BAL, bal scan $TOOL"
           at_least "$BAL" 2201.13.0 || fail "Ballerina $BAL is older than 2201.13.0"
           at_least "$TOOL" 0.12.0 || fail "bal scan $TOOL is older than 0.12.0"
@@ -65,7 +65,7 @@ jobs:
           [ "$TOTAL" -gt 0 ] || fail "total-count is '$TOTAL', expected findings"
           [ -f "$SARIF_FILE" ] || fail "sarif-file '$SARIF_FILE' does not exist"
           bal version | grep -q '^Ballerina 2201\.13\.5 ' || fail "Ballerina 2201.13.5 is not the installed version"
-          bal tool list | grep -Eq '^\|scan +\|0\.12\.0 ' || fail "bal scan 0.12.0 is not the active tool version"
+          [ "$(bash .github/scripts/active-scan-tool.sh)" = 0.12.0 ] || fail "bal scan 0.12.0 is not the active tool version"
 
       # Only ballerina-version is given, so the latest scan tool compatible with it is installed.
       - name: Scan with the latest compatible scan tool
@@ -86,7 +86,7 @@ jobs:
           at_least() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
           bal version | grep -q '^Ballerina 2201\.13\.5 ' || fail "Ballerina 2201.13.5 is not the installed version"
-          TOOL="$(bal tool list | grep -E '^\|scan +\|' | grep -Eo '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
+          TOOL="$(bash .github/scripts/active-scan-tool.sh)"
           echo "bal scan $TOOL"
           at_least "$TOOL" 0.12.0 || fail "bal scan $TOOL is older than 0.12.0"
 
@@ -119,7 +119,7 @@ jobs:
           [ "$PACKAGES" = 1 ] || fail "packages-scanned is '$PACKAGES', expected 1"
           [ "$TOTAL" -gt 0 ] || fail "total-count is '$TOTAL', expected findings"
           bal version | grep -q '^Ballerina 2201\.12\.0 ' || fail "Ballerina 2201.12.0 is not the installed version"
-          bal tool list | grep -Eq '^\|scan +\|0\.11\.0 ' || fail "bal scan 0.11.0 is not the active tool version"
+          [ "$(bash .github/scripts/active-scan-tool.sh)" = 0.11.0 ] || fail "bal scan 0.11.0 is not the active tool version"
           jq -e '.runs[0].tool.driver.semanticVersion == "0.11.0"' "$SARIF_FILE" > /dev/null \
             || fail "The SARIF file was not written by bal scan 0.11.0"
           jq -e 'any(.runs[0].results[]; .ruleId == "ballerina:1")' "$SARIF_FILE" > /dev/null \
@@ -248,7 +248,7 @@ jobs:
           fail() { echo "::error::$1"; exit 1; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
           bal version | grep -q '^Ballerina 2201\.12\.0 ' || fail "Ballerina 2201.12.0 on the path must be used"
-          bal tool list | grep -Eq '^\|scan +\|0\.11\.0 ' || fail "bal scan 0.11.0 is not the active tool version"
+          [ "$(bash .github/scripts/active-scan-tool.sh)" = 0.11.0 ] || fail "bal scan 0.11.0 is not the active tool version"
 
       # Only tool-version is given, and the bal on the path is too old for it, so the latest
       # Ballerina is installed.
@@ -271,7 +271,7 @@ jobs:
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
           BAL="$(bal version | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p')"
           at_least "$BAL" 2201.13.0 || fail "Ballerina $BAL is on the path, expected the latest Ballerina"
-          bal tool list | grep -Eq '^\|scan +\|0\.12\.0 ' || fail "bal scan 0.12.0 is not the active tool version"
+          [ "$(bash .github/scripts/active-scan-tool.sh)" = 0.12.0 ] || fail "bal scan 0.12.0 is not the active tool version"
 
       # The latest Ballerina is on the path, so the version asked for must still be installed. It is
       # the oldest Ballerina the scan tool supports.
@@ -316,7 +316,7 @@ jobs:
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
-          bal tool list | grep -Eq '^\|scan +\|0\.12\.0 ' || fail "bal scan 0.12.0 is not the active tool version"
+          [ "$(bash .github/scripts/active-scan-tool.sh)" = 0.12.0 ] || fail "bal scan 0.12.0 is not the active tool version"
           [ "$(cat "$RUNNER_TEMP/scan-ballerina-tools/scan-tool-for-ballerina-2201.13.0")" = 0.12.0 ] \
             || fail "The version Central picked was not kept in the tool cache"
 
@@ -355,7 +355,7 @@ jobs:
             | jq -r '.[]' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
           echo "Latest: Ballerina $LATEST_BAL, bal scan $LATEST_TOOL"
           bal version | grep -q "^Ballerina ${LATEST_BAL//./\\.} " || fail "Ballerina $LATEST_BAL is not the installed version"
-          bal tool list | grep -Eq "^\|scan +\|${LATEST_TOOL//./\\.} " || fail "bal scan $LATEST_TOOL is not the active tool version"
+          [ "$(bash .github/scripts/active-scan-tool.sh)" = "$LATEST_TOOL" ] || fail "bal scan $LATEST_TOOL is not the active tool version"
 
   operating-systems:
     name: Scan on ${{ matrix.os }}
