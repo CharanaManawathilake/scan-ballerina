@@ -89,18 +89,14 @@ check_boolean job-summary "$(trim "${JOB_SUMMARY:-true}")"
 ARTIFACTS="$(trim "${ARTIFACTS:-false}")"
 check_boolean artifacts "$ARTIFACTS"
 
-# Versions below the minimums, and a given Ballerina older than a given scan tool needs, fail
-# before anything is installed. latest is checked once resolve-versions.sh resolves it, and the
-# installed pair again when the scan tool is installed.
+# Versions below the minimums fail here. Whether the Ballerina can run the scan tool is checked
+# once, by resolve-versions.sh, which asks Ballerina Central before anything is installed.
 TOOL_VERSION="$(trim "${TOOL_VERSION:-}")"
-TOOL_OK=false
 if [ -n "$TOOL_VERSION" ] && [ "$TOOL_VERSION" != latest ]; then
   if [[ ! "$TOOL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
     error "tool-version must be empty, latest or a version such as $MIN_TOOL_VERSION, got '$TOOL_VERSION'."
   elif ! version_ge "$TOOL_VERSION" "$MIN_TOOL_VERSION"; then
     error "tool-version is $TOOL_VERSION, but the oldest supported version is $MIN_TOOL_VERSION. Set $MIN_TOOL_VERSION or later, or leave it empty to use the latest version compatible with the Ballerina version."
-  else
-    TOOL_OK=true
   fi
 fi
 BALLERINA_VERSION="$(trim "${BALLERINA_VERSION:-}")"
@@ -108,10 +104,6 @@ if [[ ! "$BALLERINA_VERSION" =~ ^(latest|nightly.*|[0-9]+(\.[0-9]+)*([.-][A-Za-z
   error "ballerina-version must be empty, latest or a version such as 2201.13.3, got '$BALLERINA_VERSION'."
 elif [[ "$BALLERINA_VERSION" =~ ^[0-9] ]] && ! version_ge "$BALLERINA_VERSION" "$MIN_BALLERINA_VERSION"; then
   error "ballerina-version is $BALLERINA_VERSION, but bal scan $MIN_TOOL_VERSION and later need Ballerina $MIN_BALLERINA_VERSION or later. Set $MIN_BALLERINA_VERSION or later, or leave it empty to use a Ballerina that runs the scan tool."
-elif [[ "$BALLERINA_VERSION" =~ ^[0-9] ]] && [ "$TOOL_OK" = true ] \
-  && NEEDED="$(tool_min_ballerina "$TOOL_VERSION")" && ! version_ge "$BALLERINA_VERSION" "$NEEDED"; then
-  # When Ballerina Central cannot be asked, resolve-versions.sh warns and the install checks the pair.
-  error "ballerina-version is $BALLERINA_VERSION, but bal scan $TOOL_VERSION needs Ballerina $NEEDED or later. Set a later ballerina-version, or an older tool-version that supports Ballerina $BALLERINA_VERSION, or leave either one empty to use a compatible version."
 fi
 
 # Platform configuration

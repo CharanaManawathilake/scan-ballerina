@@ -281,17 +281,25 @@ has_bal() {
 }
 
 # Prints the version of the bal on the path, such as 2201.13.5, or nothing when it cannot be read.
+# A bal that fails, such as one without Java, prints nothing instead of failing the caller.
 bal_version() {
-  bal_cmd version 2> /dev/null | tr -d '\r' | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p' | head -n1
+  { bal_cmd version 2> /dev/null || true; } | tr -d '\r' | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p' | head -n1
 }
 
-# Succeeds when the bal on the path is Ballerina $1: a version, or a prefix of one, such as 2201.13.
-bal_matches() {
-  local current
-  has_bal || return 1
-  current="$(bal_version)"
-  [ -n "$current" ] || return 1
-  [ "$current" = "$1" ] || [[ "$current" == "$1".* ]]
+# Fails when units.json ($3) has a workspace and Ballerina $1 or bal scan $2 cannot scan it. A
+# version that is empty or not yet resolved, such as latest, is not checked.
+check_workspace_support() {
+  local bal="$1" tool="$2" units="$3" unsupported="" workspaces ws
+  if [[ "$bal" =~ ^[0-9] ]] && ! version_ge "$bal" "$MIN_WORKSPACE_BALLERINA_VERSION"; then
+    unsupported="Ballerina $bal"
+  elif [[ "$tool" =~ ^[0-9] ]] && ! version_ge "$tool" "$MIN_WORKSPACE_TOOL_VERSION"; then
+    unsupported="bal scan $tool"
+  fi
+  [ -n "$unsupported" ] || return 0
+  workspaces="$(jq -r '.[] | select(.kind == "workspace") | .path' "$units")"
+  [ -n "$workspaces" ] || return 0
+  while IFS= read -r ws; do log_error "'$ws' is a workspace, which $unsupported does not support."; done <<< "$workspaces"
+  die "This run uses $unsupported, which does not support workspaces. Workspaces need Ballerina $MIN_WORKSPACE_BALLERINA_VERSION or later and bal scan $MIN_WORKSPACE_TOOL_VERSION or later: set ballerina-version to $MIN_WORKSPACE_BALLERINA_VERSION or later, and leave tool-version empty or set it to $MIN_WORKSPACE_TOOL_VERSION or later. Or leave the workspaces out with exclude-paths."
 }
 
 # Prints the active scan tool version, or nothing when none is installed. Before Ballerina 2201.13,

@@ -7,10 +7,11 @@
 # works with the other:
 # - An empty tool-version is the latest scan tool compatible with the installed Ballerina, which
 #   install-scan-tool.sh asks Ballerina Central for.
-# - An empty ballerina-version is the bal on the path when it can run the scan tool, and otherwise
-#   the latest Ballerina.
+# - An empty ballerina-version is the bal on the path when it can run the scan tool, and scan the
+#   workspaces in units.json if there are any, and otherwise the latest Ballerina.
+# A workspace with a Ballerina or scan tool that cannot scan it also fails here.
 #
-# Inputs (environment): BALLERINA_VERSION, TOOL_VERSION, CATEGORY.
+# Inputs (environment): SCAN_WORK_DIR, BALLERINA_VERSION, TOOL_VERSION, CATEGORY.
 # Outputs: install (true when Ballerina must be installed), ballerina-version (the version to
 # install, or the one on the path), tool-version (the scan tool to install, or empty for the latest
 # one compatible with the installed Ballerina).
@@ -18,6 +19,7 @@
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 WANTED_BAL="$(trim "${BALLERINA_VERSION:-}")"
 WANTED_TOOL="$(trim "${TOOL_VERSION:-}")"
 
@@ -36,16 +38,31 @@ TOOL_NAME="the scan tool"
 TOOL_CHECKED=true
 if ! NEEDED="$(tool_min_ballerina "$TOOL")"; then
   log_warning "Could not ask Ballerina Central which Ballerina bal scan $TOOL needs, so it is checked when the scan tool is installed. Check that tool-version names a published version."
-  NEEDED="$MIN_BALLERINA_VERSION"
+  # Scan tools from the first one that scans workspaces need the first Ballerina with workspaces.
+  if version_ge "$TOOL" "$MIN_WORKSPACE_TOOL_VERSION"; then
+    NEEDED="$MIN_WORKSPACE_BALLERINA_VERSION"
+  else
+    NEEDED="$MIN_BALLERINA_VERSION"
+  fi
   TOOL_CHECKED=false
 fi
 
-# 2. Ballerina. An empty ballerina-version keeps a bal on the path that can run the scan tool.
+# 2. Ballerina. An empty ballerina-version keeps a bal on the path that can run the scan tool, and
+# that has workspaces when units.json has one.
+KEEP="$NEEDED"
+KEEP_REASON="$TOOL_NAME needs $NEEDED"
+if jq -e 'any(.[]; .kind == "workspace")' "$WORK/units.json" > /dev/null \
+  && ! version_ge "$KEEP" "$MIN_WORKSPACE_BALLERINA_VERSION"; then
+  KEEP="$MIN_WORKSPACE_BALLERINA_VERSION"
+  KEEP_REASON="workspaces need $KEEP"
+fi
 CURRENT=""
-has_bal && CURRENT="$(bal_version)"
+if has_bal; then
+  CURRENT="$(bal_version)"
+fi
 BAL="$WANTED_BAL"
 if [ -z "$BAL" ]; then
-  if [ -n "$CURRENT" ] && version_ge "$CURRENT" "$NEEDED"; then
+  if [ -n "$CURRENT" ] && version_ge "$CURRENT" "$KEEP"; then
     BAL="$CURRENT"
   else
     BAL=latest
@@ -61,7 +78,7 @@ if [ "$BAL" = latest ]; then
   fi
 fi
 
-# 3. The pair. Versions given together were already checked by validate.sh, so this catches latest.
+# 3. The pair, given or resolved from latest. This is its only check before anything is installed.
 if [ -n "$TOOL" ] && [ "$TOOL_CHECKED" = true ] && [[ "$BAL" =~ ^[0-9] ]] && ! version_ge "$BAL" "$NEEDED"; then
   case "$WANTED_BAL" in
     '' | latest)
@@ -73,15 +90,19 @@ if [ -n "$TOOL" ] && [ "$TOOL_CHECKED" = true ] && [[ "$BAL" =~ ^[0-9] ]] && ! v
   esac
 fi
 
-# 4. Install Ballerina unless the bal on the path is the one resolved.
-if [ "$BAL" != latest ] && bal_matches "$BAL"; then
+# 4. Workspaces, which fail here before anything is installed when the versions are known.
+check_workspace_support "$BAL" "$TOOL" "$WORK/units.json"
+
+# 5. Install Ballerina unless the bal on the path is the one resolved: that version, or a prefix
+# of it, such as 2201.13.
+if [ "$BAL" != latest ] && [ -n "$CURRENT" ] && { [ "$CURRENT" = "$BAL" ] || [[ "$CURRENT" == "$BAL".* ]]; }; then
   echo "Using Ballerina $CURRENT, which is on the path."
   set_output install false
 else
   if has_bal && [ -z "$CURRENT" ]; then
     echo "A bal command is on the path, but its version could not be read from 'bal version', so Ballerina $BAL is installed."
   elif has_bal && [ -z "$WANTED_BAL" ]; then
-    echo "Ballerina $CURRENT is on the path, but $TOOL_NAME needs $NEEDED or later, so the latest Ballerina is installed."
+    echo "Ballerina $CURRENT is on the path, but $KEEP_REASON or later, so the latest Ballerina is installed."
   elif has_bal; then
     echo "Ballerina $CURRENT is on the path, but ballerina-version is $WANTED_BAL, so Ballerina $BAL is installed."
   fi

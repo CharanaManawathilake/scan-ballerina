@@ -157,6 +157,7 @@ runs:
       if: steps.find.outputs.count != '0'
       shell: bash
       env:
+        SCAN_WORK_DIR: ${{ steps.validate.outputs.work-dir }}
         BALLERINA_VERSION: ${{ inputs.ballerina-version }}
         TOOL_VERSION: ${{ inputs.tool-version }}
         CATEGORY: ${{ inputs.category }}

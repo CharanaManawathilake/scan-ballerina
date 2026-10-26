@@ -345,12 +345,12 @@ jobs:
         shell: bash
         env:
           RESULT: ${{ steps.scan.outputs.result }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
-          LATEST_BAL="$(gh release view --repo ballerina-platform/ballerina-distribution --json tagName --jq '.tagName | ltrimstr("v")')"
+          # The Central API the action and setup-ballerina resolve latest from.
+          LATEST_BAL="$(curl -fsSL 'https://api.central.ballerina.io/2.0/update-tool/distributions/latest?version=2201.0.0' | jq -r '.major')"
           LATEST_TOOL="$(curl -fsSL https://api.central.ballerina.io/2.0/registry/packages/ballerina/tool_scan \
             | jq -r '.[]' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)"
           echo "Latest: Ballerina $LATEST_BAL, bal scan $LATEST_TOOL"

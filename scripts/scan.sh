@@ -34,23 +34,10 @@ WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 ROOT="$(workspace_root)"
 cd "$ROOT"
 
-# Ballerina before 2201.13.0 has no workspaces, and older scan tools load only packages, so
-# workspaces fail before anything is scanned instead of failing in bal scan.
-BAL="${SCAN_BALLERINA_VERSION:-}"
-TOOL="${SCAN_TOOL_VERSION:-}"
-UNSUPPORTED=""
-if [ -n "$BAL" ] && ! version_ge "$BAL" "$MIN_WORKSPACE_BALLERINA_VERSION"; then
-  UNSUPPORTED="Ballerina $BAL"
-elif [ -n "$TOOL" ] && ! version_ge "$TOOL" "$MIN_WORKSPACE_TOOL_VERSION"; then
-  UNSUPPORTED="bal scan $TOOL"
-fi
-if [ -n "$UNSUPPORTED" ]; then
-  WORKSPACES="$(jq -r '.[] | select(.kind == "workspace") | .path' "$WORK/units.json")"
-  if [ -n "$WORKSPACES" ]; then
-    while IFS= read -r ws; do log_error "'$ws' is a workspace, which $UNSUPPORTED does not support."; done <<< "$WORKSPACES"
-    die "This run uses $UNSUPPORTED, which does not support workspaces. Workspaces need Ballerina $MIN_WORKSPACE_BALLERINA_VERSION or later and bal scan $MIN_WORKSPACE_TOOL_VERSION or later: set ballerina-version to $MIN_WORKSPACE_BALLERINA_VERSION or later, and leave tool-version empty or set it to $MIN_WORKSPACE_TOOL_VERSION or later. Or leave the workspaces out with exclude-paths."
-  fi
-fi
+# resolve-versions.sh fails on a workspace before anything is installed when it knows the versions.
+# This catches the rest, such as a latest Ballerina Central could not resolve, with the installed
+# versions, before anything is scanned instead of failing in bal scan.
+check_workspace_support "${SCAN_BALLERINA_VERSION:-}" "${SCAN_TOOL_VERSION:-}" "$WORK/units.json"
 
 RULE_ARGS=()
 INCLUDE="$(split_list "${INCLUDE_RULES:-}" | paste -sd, -)"
