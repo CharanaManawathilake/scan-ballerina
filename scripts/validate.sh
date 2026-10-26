@@ -109,8 +109,9 @@ if [[ ! "$BALLERINA_VERSION" =~ ^(latest|nightly.*|[0-9]+(\.[0-9]+)*([.-][A-Za-z
 elif [[ "$BALLERINA_VERSION" =~ ^[0-9] ]] && ! version_ge "$BALLERINA_VERSION" "$MIN_BALLERINA_VERSION"; then
   error "ballerina-version is $BALLERINA_VERSION, but bal scan $MIN_TOOL_VERSION and later need Ballerina $MIN_BALLERINA_VERSION or later. Set $MIN_BALLERINA_VERSION or later, or leave it empty to use a Ballerina that runs the scan tool."
 elif [[ "$BALLERINA_VERSION" =~ ^[0-9] ]] && [ "$TOOL_OK" = true ] \
-  && ! version_ge "$BALLERINA_VERSION" "$(tool_min_ballerina "$TOOL_VERSION")"; then
-  error "ballerina-version is $BALLERINA_VERSION, but bal scan $TOOL_VERSION needs Ballerina $(tool_min_ballerina "$TOOL_VERSION") or later. Set a later ballerina-version, or an older tool-version that supports Ballerina $BALLERINA_VERSION, or leave either one empty to use a compatible version."
+  && NEEDED="$(tool_min_ballerina "$TOOL_VERSION")" && ! version_ge "$BALLERINA_VERSION" "$NEEDED"; then
+  # When Ballerina Central cannot be asked, resolve-versions.sh warns and the install checks the pair.
+  error "ballerina-version is $BALLERINA_VERSION, but bal scan $TOOL_VERSION needs Ballerina $NEEDED or later. Set a later ballerina-version, or an older tool-version that supports Ballerina $BALLERINA_VERSION, or leave either one empty to use a compatible version."
 fi
 
 # Platform configuration

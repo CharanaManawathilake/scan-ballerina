@@ -258,7 +258,7 @@ A result without a `level` takes its rule's default level, and `warning` when th
 
 Ballerina and the scan tool are resolved together, and then the SonarQube platform plugin for the scan tool. Each must be at least the oldest supported version: Ballerina `2201.12.0`, `bal scan` `0.11.0` and plugin `0.3.0`.
 
-- **A version, or `latest`,** is used as given. `latest` is the latest release, whatever the other versions are. A pair that does not work together fails before anything is installed: `bal scan` `0.12.0` and later need Ballerina `2201.13.0` or later.
+- **A version, or `latest`,** is used as given. `latest` is the latest release, whatever the other versions are. A pair that does not work together fails before anything is installed.
 - **Empty** is resolved to a version that works with the others:
 
 | `ballerina-version` | `tool-version` | Result |

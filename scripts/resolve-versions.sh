@@ -2,7 +2,8 @@
 # Step 4: resolves the Ballerina to install and the scan tool version, before either is installed.
 #
 # A version, or latest, is used as given. latest is the newest release, whatever the other version
-# is, and a Ballerina older than the scan tool needs fails. An empty version is resolved to one that
+# is, and a Ballerina older than the scan tool needs, from the Ballerina update Ballerina Central
+# records for that scan tool version, fails. An empty version is resolved to one that
 # works with the other:
 # - An empty tool-version is the latest scan tool compatible with the installed Ballerina, which
 #   install-scan-tool.sh asks Ballerina Central for.
@@ -27,10 +28,17 @@ if [ "$TOOL" = latest ]; then
     || die "Could not ask Ballerina Central for the latest bal scan. Set tool-version to a version, or leave it empty to use the latest version compatible with the Ballerina version."
   echo "The latest bal scan is $TOOL."
 fi
-NEEDED="$(tool_min_ballerina "$TOOL")"
 TOOL_NAME="the scan tool"
 [ -z "$TOOL" ] || TOOL_NAME="bal scan $TOOL"
 [ "$WANTED_TOOL" != latest ] || TOOL_NAME="the latest bal scan, $TOOL,"
+# The Ballerina the scan tool needs, from Ballerina Central. Without it the pair is not checked
+# here, and installing the scan tool fails if the installed Ballerina cannot run it.
+TOOL_CHECKED=true
+if ! NEEDED="$(tool_min_ballerina "$TOOL")"; then
+  log_warning "Could not ask Ballerina Central which Ballerina bal scan $TOOL needs, so it is checked when the scan tool is installed. Check that tool-version names a published version."
+  NEEDED="$MIN_BALLERINA_VERSION"
+  TOOL_CHECKED=false
+fi
 
 # 2. Ballerina. An empty ballerina-version keeps a bal on the path that can run the scan tool.
 CURRENT=""
@@ -54,7 +62,7 @@ if [ "$BAL" = latest ]; then
 fi
 
 # 3. The pair. Versions given together were already checked by validate.sh, so this catches latest.
-if [ -n "$TOOL" ] && [[ "$BAL" =~ ^[0-9] ]] && ! version_ge "$BAL" "$NEEDED"; then
+if [ -n "$TOOL" ] && [ "$TOOL_CHECKED" = true ] && [[ "$BAL" =~ ^[0-9] ]] && ! version_ge "$BAL" "$NEEDED"; then
   case "$WANTED_BAL" in
     '' | latest)
       die "The latest Ballerina is $BAL, but $TOOL_NAME needs Ballerina $NEEDED or later. Set tool-version to an older scan tool, or leave it empty to use the latest one compatible with Ballerina $BAL."

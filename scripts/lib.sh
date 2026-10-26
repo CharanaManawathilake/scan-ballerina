@@ -13,39 +13,16 @@ set -euo pipefail
 MIN_TOOL_VERSION="0.11.0"
 MIN_BALLERINA_VERSION="2201.12.0"
 
-# The oldest Ballerina each scan tool needs, newest first: the first scan tool version of a range,
-# and the Ballerina update it was built with. A scan tool runs on that update and later ones.
-TOOL_BALLERINA_VERSIONS="\
-0.12.0 2201.13.0
-0.11.0 2201.12.0
-"
-
 # The first Ballerina with workspaces, and the first scan tool that scans them. Older scan tools
 # load only packages.
 MIN_WORKSPACE_BALLERINA_VERSION="2201.13.0"
 MIN_WORKSPACE_TOOL_VERSION="0.12.0"
 
-# Prints the oldest Ballerina that runs scan tool version $1, or that runs any supported scan tool
-# when $1 is empty.
-tool_min_ballerina() {
-  local tool ballerina
-  if [ -n "$1" ]; then
-    while read -r tool ballerina; do
-      [ -n "$tool" ] || continue
-      if version_ge "$1" "$tool"; then
-        printf '%s' "$ballerina"
-        return
-      fi
-    done <<< "$TOOL_BALLERINA_VERSIONS"
-  fi
-  printf '%s' "$MIN_BALLERINA_VERSION"
-}
-
 # The Central API 'bal tool pull scan' uses to pick the latest scan tool for a Ballerina version.
 CENTRAL_TOOLS_URL="https://api.central.ballerina.io/2.0/registry/tools"
 CENTRAL_PLATFORM="java21"
 # The Central APIs for the latest Ballerina, which setup-ballerina also uses, and for every
-# published scan tool version.
+# published scan tool version, with each version's details under $CENTRAL_SCAN_TOOL_VERSIONS_URL/<version>.
 CENTRAL_LATEST_BALLERINA_URL="https://api.central.ballerina.io/2.0/update-tool/distributions/latest?version=2201.0.0"
 CENTRAL_SCAN_TOOL_VERSIONS_URL="https://api.central.ballerina.io/2.0/registry/packages/ballerina/tool_scan"
 
@@ -86,6 +63,18 @@ latest_tool_version() {
 fetch_latest_tool_version() {
   central_get "$CENTRAL_SCAN_TOOL_VERSIONS_URL" | jq -r '.[]' \
     | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1
+}
+
+tool_min_ballerina() {
+  if [ -z "$1" ]; then
+    printf '%s' "$MIN_BALLERINA_VERSION"
+    return
+  fi
+  cached_version "ballerina-for-scan-tool-$1" fetch_tool_min_ballerina "$1"
+}
+fetch_tool_min_ballerina() {
+  central_get "$CENTRAL_SCAN_TOOL_VERSIONS_URL/$1" \
+    | jq -r '.ballerinaVersion // empty | capture("^(?<update>[0-9]+\\.[0-9]+)\\.").update + ".0"'
 }
 
 # Prints the latest Ballerina release.
