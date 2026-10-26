@@ -294,6 +294,18 @@ bal_matches() {
   [ "$current" = "$1" ] || [[ "$current" == "$1".* ]]
 }
 
+# Prints the active scan tool version, or nothing when none is installed. Before Ballerina 2201.13,
+# 'bal tool list' marks the active version with "*"; later ones list only that version.
+active_tool_version() {
+  bal_cmd tool list 2> /dev/null | tr -d '\r' \
+    | awk -F'|' '$2 ~ /^[[:space:]]*scan[[:space:]]*$/ && match($3, /[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*/) {
+        v = substr($3, RSTART, RLENGTH)
+        if ($3 ~ /\*/) active = v
+        else if (first == "") first = v
+      }
+      END { print (active != "" ? active : first) }'
+}
+
 # Removes the Ballerina distributions installed from .deb packages. Each version is its own package
 # but installs into /usr/lib/ballerina, so dpkg refuses to install another version over it.
 # Remove once setup-ballerina does this: https://github.com/ballerina-platform/setup-ballerina/issues/23

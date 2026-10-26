@@ -18,20 +18,8 @@ BAL_VERSION="$(bal_version)"
 version_ge "$BAL_VERSION" "$MIN_BALLERINA_VERSION" \
   || die "bal scan $MIN_TOOL_VERSION and later need Ballerina $MIN_BALLERINA_VERSION or later, but Ballerina $BAL_VERSION is installed. Set ballerina-version to $MIN_BALLERINA_VERSION or later, or update the Ballerina setup step before this action."
 
-# Prints the active scan tool version. Before Ballerina 2201.13, 'bal tool list' lists every pulled
-# version and marks the active one with "*"; later ones list only the active version, unmarked.
-active_version() {
-  bal_cmd tool list 2> /dev/null | tr -d '\r' \
-    | awk -F'|' '$2 ~ /^[[:space:]]*scan[[:space:]]*$/ && match($3, /[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*/) {
-        v = substr($3, RSTART, RLENGTH)
-        if ($3 ~ /\*/) active = v
-        else if (first == "") first = v
-      }
-      END { print (active != "" ? active : first) }'
-}
-
 WANTED="$(trim "${TOOL_VERSION:-}")"
-ACTIVE="$(active_version)"
+ACTIVE="$(active_tool_version)"
 HINT="Check that tool-version names a published version that supports Ballerina $BAL_VERSION: a scan tool runs on the Ballerina update it was built with and later ones. Leave tool-version empty to use the latest compatible version."
 if [ -z "$WANTED" ]; then
   if WANTED="$(latest_compatible_tool_version "$BAL_VERSION")"; then
@@ -60,10 +48,10 @@ if [ "$ACTIVE" != "$WANTED" ]; then
   # that is already active, so it runs only when the switch did not work. Neither exit code is
   # reliable on every runner, so the active version decides.
   bal_cmd tool use "scan:$WANTED" || true
-  ACTIVE="$(active_version)"
+  ACTIVE="$(active_tool_version)"
   if [ "$ACTIVE" != "$WANTED" ]; then
     bal_cmd tool pull "scan:$WANTED" || true
-    ACTIVE="$(active_version)"
+    ACTIVE="$(active_tool_version)"
   fi
   echo "::endgroup::"
   [ "$ACTIVE" = "$WANTED" ] || die "Could not install bal scan $WANTED for Ballerina $BAL_VERSION (active version: ${ACTIVE:-none}). $HINT"
