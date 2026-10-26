@@ -177,6 +177,8 @@ runs:
       shell: bash
       env:
         TOOL_VERSION: ${{ steps.versions.outputs.tool-version }}
+        TOOL_PICKED: ${{ steps.versions.outputs.tool-picked }}
+        TOOL_CHECKED: ${{ steps.versions.outputs.tool-checked }}
         CATEGORY: ${{ inputs.category }}
       run: bash "${GITHUB_ACTION_PATH//\\//}/scripts/install-scan-tool.sh"
 

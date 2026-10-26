@@ -34,9 +34,7 @@ WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 ROOT="$(workspace_root)"
 cd "$ROOT"
 
-# resolve-versions.sh fails on a workspace before anything is installed when it knows the versions.
-# This catches the rest, such as a latest Ballerina Central could not resolve, with the installed
-# versions, before anything is scanned instead of failing in bal scan.
+# Catches workspaces resolve-versions.sh could not check, such as with an unresolved latest.
 check_workspace_support "${SCAN_BALLERINA_VERSION:-}" "${SCAN_TOOL_VERSION:-}" "$WORK/units.json"
 
 RULE_ARGS=()

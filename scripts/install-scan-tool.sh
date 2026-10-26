@@ -5,7 +5,7 @@
 # Ballerina, which is then installed like a given tool-version.
 #
 # Inputs (environment): TOOL_VERSION (the version resolve-versions.sh resolved, empty for the latest
-# compatible version), CATEGORY.
+# compatible version), TOOL_PICKED and TOOL_CHECKED (its outputs of those names), CATEGORY.
 # Outputs: ballerina-version, tool-version.
 
 # shellcheck source=lib.sh
@@ -21,6 +21,11 @@ version_ge "$BAL_VERSION" "$MIN_BALLERINA_VERSION" \
 WANTED="$(trim "${TOOL_VERSION:-}")"
 ACTIVE="$(active_tool_version)"
 HINT="Check that tool-version names a published version that supports Ballerina $BAL_VERSION: a scan tool runs on the Ballerina update it was built with and later ones. Leave tool-version empty to use the latest compatible version."
+PICKED_HINT="Ballerina Central picked it as the latest version compatible with Ballerina $BAL_VERSION. Set tool-version to install a given version."
+[ "${TOOL_PICKED:-false}" != true ] || HINT="$PICKED_HINT"
+# resolve-versions.sh already asked Central which Ballerina a resolved scan tool needs.
+CHECKED="${TOOL_CHECKED:-true}"
+[ -n "$WANTED" ] || CHECKED=true
 if [ -z "$WANTED" ]; then
   if WANTED="$(latest_compatible_tool_version "$BAL_VERSION")"; then
     echo "The latest bal scan compatible with Ballerina $BAL_VERSION is $WANTED."
@@ -32,12 +37,12 @@ if [ -z "$WANTED" ]; then
   fi
   version_ge "$WANTED" "$MIN_TOOL_VERSION" \
     || die "The latest bal scan compatible with Ballerina $BAL_VERSION is $WANTED, but the oldest supported version is $MIN_TOOL_VERSION. Set tool-version to $MIN_TOOL_VERSION or a later version that supports Ballerina $BAL_VERSION."
-  HINT="Ballerina Central picked it as the latest version compatible with Ballerina $BAL_VERSION. Set tool-version to install a given version."
+  HINT="$PICKED_HINT"
 fi
 
-# Without Ballerina Central, 'bal tool pull' and the active version below catch a scan tool that
-# the installed Ballerina cannot run.
-if NEEDED="$(tool_min_ballerina "$WANTED")"; then
+# For a Ballerina unknown until installed, such as 2201.13. Cached, and not asked again when Central
+# failed in resolve-versions.sh: then 'bal tool pull' and the active version below catch a mismatch.
+if [ "$CHECKED" = true ] && NEEDED="$(tool_min_ballerina "$WANTED")"; then
   version_ge "$BAL_VERSION" "$NEEDED" \
     || die "bal scan $WANTED needs Ballerina $NEEDED or later, but Ballerina $BAL_VERSION is installed. Set ballerina-version to $NEEDED or later, or set tool-version to an older scan tool that supports Ballerina $BAL_VERSION."
 fi

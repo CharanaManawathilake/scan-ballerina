@@ -320,6 +320,39 @@ jobs:
           [ "$(cat "$RUNNER_TEMP/scan-ballerina-tools/scan-tool-for-ballerina-2201.13.0")" = 0.12.0 ] \
             || fail "The version Central picked was not kept in the tool cache"
 
+  # With both versions empty, a Ballerina on the path that runs only bal scan 0.11.x is replaced.
+  empty-versions-old-bal:
+    name: Empty versions with Ballerina 2201.12 on the path
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up an old Ballerina
+        uses: ballerina-platform/setup-ballerina@585120e3f0e540bf127376ee6e75d39e8ce6aaa4 # v1.1.5
+        with:
+          version: 2201.12.0
+          github-token: ${{ github.token }}
+
+      - name: Scan
+        id: scan
+        uses: ./
+        with:
+          paths: test/projects/single
+
+      - name: Check that the latest Ballerina and a later scan tool were installed
+        shell: bash
+        env:
+          RESULT: ${{ steps.scan.outputs.result }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          at_least() { [ "$(printf '%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]; }
+          [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          BAL="$(bal version | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p')"
+          at_least "$BAL" 2201.13.0 || fail "Ballerina $BAL is on the path, expected the latest Ballerina"
+          TOOL="$(bash .github/scripts/active-scan-tool.sh)"
+          at_least "$TOOL" 0.12.0 || fail "bal scan $TOOL is active, expected 0.12.0 or later"
+
   # latest is the latest release of each, even when the bal on the path can run every scan tool.
   latest-keyword:
     name: Ballerina and scan tool versions set to latest

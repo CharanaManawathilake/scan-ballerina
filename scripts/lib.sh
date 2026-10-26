@@ -26,6 +26,10 @@ CENTRAL_PLATFORM="java21"
 CENTRAL_LATEST_BALLERINA_URL="https://api.central.ballerina.io/2.0/update-tool/distributions/latest?version=2201.0.0"
 CENTRAL_SCAN_TOOL_VERSIONS_URL="https://api.central.ballerina.io/2.0/registry/packages/ballerina/tool_scan"
 
+# Options of every curl call: HTTPS only, with retries, and a connect timeout so that a stalled
+# connection fails instead of hanging the job. Downloads can be large, so there is no overall limit.
+CURL_OPTS=(-fsSL --proto '=https' --retry 3 --connect-timeout 10)
+
 # Prints the version cached as $1, or else runs the rest of the arguments and caches what it prints,
 # once per job. Fails when that is not a version.
 cached_version() {
@@ -42,14 +46,29 @@ cached_version() {
   printf '%s' "$version"
 }
 
+# Like cached_version, for an answer that changes with new releases. Outside Actions the cache
+# outlives the run, so it is not cached there.
+cached_latest_version() {
+  local version
+  if [ -n "${RUNNER_TEMP:-}" ]; then
+    cached_version "$@"
+    return
+  fi
+  shift
+  version="$("$@")" || return 1
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || return 1
+  printf '%s' "$version"
+}
+
+# A Central API call is small, so it also has an overall timeout.
 central_get() {
-  curl -fsSL --proto '=https' --retry 3 "$@"
+  curl "${CURL_OPTS[@]}" --max-time 30 "$@"
 }
 
 # Prints the latest scan tool compatible with Ballerina $1. Central picks it from the Ballerina
 # version in the User-Agent, as it does for 'bal tool pull scan'.
 latest_compatible_tool_version() {
-  cached_version "scan-tool-for-ballerina-$1" fetch_compatible_tool_version "$1"
+  cached_latest_version "scan-tool-for-ballerina-$1" fetch_compatible_tool_version "$1"
 }
 fetch_compatible_tool_version() {
   central_get -H "User-Agent: $1" -H "Ballerina-Platform: $CENTRAL_PLATFORM" "$CENTRAL_TOOLS_URL/scan" \
@@ -58,7 +77,7 @@ fetch_compatible_tool_version() {
 
 # Prints the latest scan tool release, whatever Ballerina it needs. Pre-releases are left out.
 latest_tool_version() {
-  cached_version latest-scan-tool fetch_latest_tool_version
+  cached_latest_version latest-scan-tool fetch_latest_tool_version
 }
 fetch_latest_tool_version() {
   central_get "$CENTRAL_SCAN_TOOL_VERSIONS_URL" | jq -r '.[]' \
@@ -79,7 +98,7 @@ fetch_tool_min_ballerina() {
 
 # Prints the latest Ballerina release.
 latest_ballerina_version() {
-  cached_version latest-ballerina fetch_latest_ballerina_version
+  cached_latest_version latest-ballerina fetch_latest_ballerina_version
 }
 fetch_latest_ballerina_version() {
   central_get "$CENTRAL_LATEST_BALLERINA_URL" | jq -r '.major // empty'
@@ -513,7 +532,7 @@ download() {
   local url="$1" out="$2" tmp
   shift 2
   tmp="$(mktemp "$out.XXXXXX")"
-  if curl -fsSL --proto '=https' --retry 3 "$@" -o "$tmp" "$url"; then
+  if curl "${CURL_OPTS[@]}" "$@" -o "$tmp" "$url"; then
     mv "$tmp" "$out"
   else
     rm -f "$tmp"
