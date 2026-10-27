@@ -122,6 +122,8 @@ if [ "$BAL" != latest ] && [ -n "$CURRENT" ] && { [ "$CURRENT" = "$BAL" ] || [[ 
 else
   if has_bal && [ -z "$CURRENT" ]; then
     echo "A bal command is on the path, but its version could not be read from 'bal version', so $BAL_NAME is installed."
+  elif [ "$WANTED_BAL" = latest ] && [ -n "$CURRENT" ] && version_ge "$CURRENT" "$KEEP"; then
+    log_warning "Ballerina $CURRENT is on the path and can run the scan tool, but ballerina-version is latest, so $BAL_NAME is installed and used for the rest of the job. Leave ballerina-version empty to keep Ballerina $CURRENT."
   elif has_bal && [ -z "$WANTED_BAL" ]; then
     echo "Ballerina $CURRENT is on the path, but $KEEP_REASON or later, so $BAL_NAME is installed."
   elif has_bal; then
