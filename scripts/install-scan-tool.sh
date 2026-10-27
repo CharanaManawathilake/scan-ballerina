@@ -27,16 +27,14 @@ PICKED_HINT="Ballerina Central picked it as the latest version compatible with B
 CHECKED="${TOOL_CHECKED:-true}"
 [ -n "$WANTED" ] || CHECKED=true
 if [ -z "$WANTED" ]; then
-  if WANTED="$(latest_compatible_tool_version "$BAL_VERSION")"; then
-    echo "The latest bal scan compatible with Ballerina $BAL_VERSION is $WANTED."
+  if pick_compatible_tool "$BAL_VERSION"; then
+    WANTED="$PICKED_TOOL"
   elif [ -n "$ACTIVE" ] && version_ge "$ACTIVE" "$MIN_TOOL_VERSION"; then
     log_warning "Could not ask Ballerina Central for the latest bal scan compatible with Ballerina $BAL_VERSION, so the active version $ACTIVE is used. Set tool-version to choose the version."
     WANTED="$ACTIVE"
   else
     die "Could not ask Ballerina Central for the latest bal scan compatible with Ballerina $BAL_VERSION. Set tool-version to install a given version."
   fi
-  version_ge "$WANTED" "$MIN_TOOL_VERSION" \
-    || die "The latest bal scan compatible with Ballerina $BAL_VERSION is $WANTED, but the oldest supported version is $MIN_TOOL_VERSION. Set tool-version to $MIN_TOOL_VERSION or a later version that supports Ballerina $BAL_VERSION."
   HINT="$PICKED_HINT"
 fi
 

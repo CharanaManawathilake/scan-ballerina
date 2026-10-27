@@ -236,17 +236,22 @@ jobs:
         uses: ./
         with:
           tool-version: 0.11.0
-          paths: test/projects/single
+          paths: test/oldest-ballerina
           category: compatible-bal-on-path
 
       - name: Check that the Ballerina on the path was used
         shell: bash
         env:
           RESULT: ${{ steps.compatible-bal-on-path.outputs.result }}
+          SARIF_FILE: ${{ steps.compatible-bal-on-path.outputs.sarif-file }}
+          TOTAL: ${{ steps.compatible-bal-on-path.outputs.total-count }}
         run: |
           set -euo pipefail
           fail() { echo "::error::$1"; exit 1; }
           [ "$RESULT" = passed ] || fail "result is '$RESULT', expected passed"
+          [ "$TOTAL" -gt 0 ] || fail "total-count is '$TOTAL', expected findings"
+          jq -e 'any(.runs[0].results[]; .ruleId == "ballerina:1")' "$SARIF_FILE" > /dev/null \
+            || fail "The checkpanic finding (ballerina:1) is missing"
           bal version | grep -q '^Ballerina 2201\.12\.0 ' || fail "Ballerina 2201.12.0 on the path must be used"
           [ "$(bash .github/scripts/active-scan-tool.sh)" = 0.11.0 ] || fail "bal scan 0.11.0 is not the active tool version"
 

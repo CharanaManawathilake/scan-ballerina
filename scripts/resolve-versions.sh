@@ -31,11 +31,7 @@ tool_needs() {
   TOOL_CHECKED=true
   NEEDED="$(tool_min_ballerina "$TOOL")" && return
   TOOL_CHECKED=false
-  if version_ge "$TOOL" "$MIN_WORKSPACE_TOOL_VERSION"; then
-    NEEDED="$MIN_WORKSPACE_BALLERINA_VERSION"
-  else
-    NEEDED="$MIN_BALLERINA_VERSION"
-  fi
+  NEEDED="$(known_tool_min_ballerina "$TOOL")"
   if [ "$WANTED_TOOL" = "$TOOL" ]; then
     log_warning "Could not ask Ballerina Central which Ballerina bal scan $TOOL needs, so Ballerina $NEEDED or later is assumed. Check that tool-version names a published version."
   else
@@ -91,16 +87,14 @@ BAL_NAME="Ballerina $BAL"
 
 # 3. An empty tool-version, for a Ballerina known before it is installed.
 if [ -z "$TOOL" ] && [[ "$BAL" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  if TOOL="$(latest_compatible_tool_version "$BAL")"; then
-    echo "The latest bal scan compatible with Ballerina $BAL is $TOOL."
-    version_ge "$TOOL" "$MIN_TOOL_VERSION" \
-      || die "The latest bal scan compatible with Ballerina $BAL is $TOOL, but the oldest supported version is $MIN_TOOL_VERSION. Set tool-version to $MIN_TOOL_VERSION or a later version that supports Ballerina $BAL."
+  if pick_compatible_tool "$BAL"; then
+    TOOL="$PICKED_TOOL"
     TOOL_NAME="bal scan $TOOL, which Ballerina Central picked,"
     TOOL_PICKED=true
     tool_needs
   else
-    # install-scan-tool.sh asks again once Ballerina is installed.
-    TOOL=""
+    # install-scan-tool.sh falls back to the active scan tool, without asking Central again.
+    log_warning "Could not ask Ballerina Central for the latest bal scan compatible with Ballerina $BAL."
   fi
 fi
 

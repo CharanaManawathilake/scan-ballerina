@@ -9,9 +9,15 @@
 
 set -euo pipefail
 
+# Known scan tool lines, oldest first: the first version of each, and the oldest Ballerina that runs
+# it. Used when Ballerina Central cannot say which Ballerina a scan tool needs.
+SCAN_TOOL_BALLERINA="\
+0.11.0 2201.12.0
+0.12.0 2201.13.0
+"
+
 # The oldest supported scan tool, and the oldest Ballerina that runs it.
-MIN_TOOL_VERSION="0.11.0"
-MIN_BALLERINA_VERSION="2201.12.0"
+read -r MIN_TOOL_VERSION MIN_BALLERINA_VERSION <<< "$SCAN_TOOL_BALLERINA"
 
 # The first Ballerina with workspaces, and the first scan tool that scans them. Older scan tools
 # load only packages.
@@ -26,38 +32,37 @@ CENTRAL_PLATFORM="java21"
 CENTRAL_LATEST_BALLERINA_URL="https://api.central.ballerina.io/2.0/update-tool/distributions/latest?version=2201.0.0"
 CENTRAL_SCAN_TOOL_VERSIONS_URL="https://api.central.ballerina.io/2.0/registry/packages/ballerina/tool_scan"
 
-# Options of every curl call: HTTPS only, with retries, and a connect timeout so that a stalled
-# connection fails instead of hanging the job. Downloads can be large, so there is no overall limit.
-CURL_OPTS=(-fsSL --proto '=https' --retry 3 --connect-timeout 10)
+# Options of every curl call: HTTPS only, with retries, and limits that fail a connection or a
+# transfer that stalls instead of hanging the job. Downloads can be large, so there is no overall limit.
+CURL_OPTS=(-fsSL --proto '=https' --retry 3 --connect-timeout 10 --speed-limit 1 --speed-time 60)
 
 # Prints the version cached as $1, or else runs the rest of the arguments and caches what it prints,
-# once per job. Fails when that is not a version.
+# once per job. Fails when that is not a version. An empty $1 caches nothing. On Actions a failure is
+# also cached, so a Central outage pays the retries once per job.
 cached_version() {
-  local cache version
-  cache="$(tool_cache_dir)/$1"
+  local cache="" version
+  [ -z "$1" ] || cache="$(tool_cache_dir)/$1"
   shift
-  if [ -s "$cache" ]; then
-    cat "$cache"
-    return
+  if [ -n "$cache" ]; then
+    [ ! -e "$cache.failed" ] || return 1
+    if [ -s "$cache" ]; then
+      cat "$cache"
+      return
+    fi
   fi
-  version="$("$@")" || return 1
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || return 1
-  printf '%s' "$version" > "$cache"
-  printf '%s' "$version"
+  if version="$("$@")" && [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    [ -z "$cache" ] || printf '%s' "$version" > "$cache"
+    printf '%s' "$version"
+  else
+    [ -z "$cache" ] || [ -z "${RUNNER_TEMP:-}" ] || : > "$cache.failed"
+    return 1
+  fi
 }
 
 # Like cached_version, for an answer that changes with new releases. Outside Actions the cache
 # outlives the run, so it is not cached there.
 cached_latest_version() {
-  local version
-  if [ -n "${RUNNER_TEMP:-}" ]; then
-    cached_version "$@"
-    return
-  fi
-  shift
-  version="$("$@")" || return 1
-  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]] || return 1
-  printf '%s' "$version"
+  cached_version "${RUNNER_TEMP:+$1}" "${@:2}"
 }
 
 # A Central API call is small, so it also has an overall timeout.
@@ -75,6 +80,15 @@ fetch_compatible_tool_version() {
     | jq -r '.version // empty'
 }
 
+# Sets PICKED_TOOL to the latest scan tool compatible with Ballerina $1, failing when Central cannot
+# say. Dies when that scan tool is older than the oldest supported one.
+pick_compatible_tool() {
+  PICKED_TOOL="$(latest_compatible_tool_version "$1")" || return 1
+  echo "The latest bal scan compatible with Ballerina $1 is $PICKED_TOOL."
+  version_ge "$PICKED_TOOL" "$MIN_TOOL_VERSION" \
+    || die "The latest bal scan compatible with Ballerina $1 is $PICKED_TOOL, but the oldest supported version is $MIN_TOOL_VERSION. Set tool-version to $MIN_TOOL_VERSION or a later version that supports Ballerina $1."
+}
+
 # Prints the latest scan tool release, whatever Ballerina it needs. Pre-releases are left out.
 latest_tool_version() {
   cached_latest_version latest-scan-tool fetch_latest_tool_version
@@ -85,15 +99,24 @@ fetch_latest_tool_version() {
 }
 
 tool_min_ballerina() {
-  if [ -z "$1" ]; then
-    printf '%s' "$MIN_BALLERINA_VERSION"
-    return
-  fi
   cached_version "ballerina-for-scan-tool-$1" fetch_tool_min_ballerina "$1"
 }
 fetch_tool_min_ballerina() {
   central_get "$CENTRAL_SCAN_TOOL_VERSIONS_URL/$1" \
     | jq -r '.ballerinaVersion // empty | capture("^(?<update>[0-9]+\\.[0-9]+)\\.").update + ".0"'
+}
+
+# Prints the oldest Ballerina of the known scan tool line that version $1 belongs to.
+known_tool_min_ballerina() {
+  local row needed="$MIN_BALLERINA_VERSION" rows
+  # Read up front: version_ge's here-strings break a here-string loop in a command substitution.
+  mapfile -t rows <<< "$SCAN_TOOL_BALLERINA"
+  for row in "${rows[@]}"; do
+    if [ -n "$row" ] && version_ge "$1" "${row% *}"; then
+      needed="${row#* }"
+    fi
+  done
+  printf '%s' "$needed"
 }
 
 # Prints the latest Ballerina release.
