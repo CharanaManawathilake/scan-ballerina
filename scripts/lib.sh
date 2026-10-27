@@ -37,24 +37,23 @@ CENTRAL_SCAN_TOOL_VERSIONS_URL="https://api.central.ballerina.io/2.0/registry/pa
 CURL_OPTS=(-fsSL --proto '=https' --retry 3 --connect-timeout 10 --speed-limit 1 --speed-time 60)
 
 # Prints the version cached as $1, or else runs the rest of the arguments and caches what it prints,
-# once per job. Fails when that is not a version. An empty $1 caches nothing. On Actions a failure is
-# also cached, so a Central outage pays the retries once per job.
+# once per job. Fails when that is not a version. An empty $1 caches nothing. A failure is cached in
+# the work directory, so a Central outage pays the retries once per run and a later run asks again.
 cached_version() {
-  local cache="" version
+  local cache="" failed="" version
   [ -z "$1" ] || cache="$(tool_cache_dir)/$1"
+  [ -z "$1" ] || [ -z "${SCAN_WORK_DIR:-}" ] || failed="$SCAN_WORK_DIR/$1.failed"
   shift
-  if [ -n "$cache" ]; then
-    [ ! -e "$cache.failed" ] || return 1
-    if [ -s "$cache" ]; then
-      cat "$cache"
-      return
-    fi
+  [ -z "$failed" ] || [ ! -e "$failed" ] || return 1
+  if [ -s "$cache" ]; then
+    cat "$cache"
+    return
   fi
   if version="$("$@")" && [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
     [ -z "$cache" ] || printf '%s' "$version" > "$cache"
     printf '%s' "$version"
   else
-    [ -z "$cache" ] || [ -z "${RUNNER_TEMP:-}" ] || : > "$cache.failed"
+    [ -z "$failed" ] || : > "$failed"
     return 1
   fi
 }

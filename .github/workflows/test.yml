@@ -111,6 +111,19 @@ jobs:
           done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<< "$EXPECTED")
           [ "$FAILURES" -eq 0 ] || exit 1
 
+      - name: Check the warning of latest replacing the Ballerina on the path
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          ANNOTATIONS="$(bash .github/scripts/annotations.sh 'Setup / Ballerina and scan tool versions set to latest')"
+          jq . <<< "$ANNOTATIONS"
+          jq -e 'any(.[]; .annotation_level == "warning"
+              and (.message | contains("Ballerina 2201.13.0 is on the path and can run the scan tool, but ballerina-version is latest")))' \
+            <<< "$ANNOTATIONS" > /dev/null || fail "latest must warn that it replaces Ballerina 2201.13.0 on the path"
+
       - name: Check the error of a workspace on Ballerina 2201.12.0
         shell: bash
         env:

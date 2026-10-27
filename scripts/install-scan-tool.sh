@@ -4,7 +4,7 @@
 # An empty tool-version resolves to the latest scan tool Ballerina Central picks for the installed
 # Ballerina, which is then installed like a given tool-version.
 #
-# Inputs (environment): TOOL_VERSION (the version resolve-versions.sh resolved, empty for the latest
+# Inputs (environment): SCAN_WORK_DIR, TOOL_VERSION (the version resolve-versions.sh resolved, empty for the latest
 # compatible version), TOOL_PICKED and TOOL_CHECKED (its outputs of those names), CATEGORY.
 # Outputs: ballerina-version, tool-version.
 
