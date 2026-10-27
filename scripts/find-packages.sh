@@ -93,7 +93,7 @@ scan_config_problem() {
     file="$(remote_scan_toml_file "$url")"
     if [ ! -f "$file" ]; then
       mkdir -p "$(dirname "$file")"
-      if ! curl -fsSL --proto '=https' --retry 3 -o "$file" "$url"; then
+      if ! curl "${CURL_OPTS[@]}" -o "$file" "$url"; then
         rm -f "$file"
         echo "Package '$pkg': could not download its Scan.toml from '$url' ([scan] configPath in Ballerina.toml)."
         return 0

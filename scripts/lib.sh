@@ -9,13 +9,122 @@
 
 set -euo pipefail
 
+# Known scan tool lines, oldest first: the first version of each, and the oldest Ballerina that runs
+# it. Used when Ballerina Central cannot say which Ballerina a scan tool needs.
+SCAN_TOOL_BALLERINA="\
+0.11.0 2201.12.0
+0.12.0 2201.13.0
+"
+
 # The oldest supported scan tool, and the oldest Ballerina that runs it.
-MIN_TOOL_VERSION="0.12.0"
-MIN_BALLERINA_VERSION="2201.13.0"
+read -r MIN_TOOL_VERSION MIN_BALLERINA_VERSION <<< "$SCAN_TOOL_BALLERINA"
+
+# The first Ballerina with workspaces, and the first scan tool that scans them. Older scan tools
+# load only packages.
+MIN_WORKSPACE_BALLERINA_VERSION="2201.13.0"
+MIN_WORKSPACE_TOOL_VERSION="0.12.0"
 
 # The Central API 'bal tool pull scan' uses to pick the latest scan tool for a Ballerina version.
 CENTRAL_TOOLS_URL="https://api.central.ballerina.io/2.0/registry/tools"
 CENTRAL_PLATFORM="java21"
+# The Central APIs for the latest Ballerina, which setup-ballerina also uses, and for every
+# published scan tool version, with each version's details under $CENTRAL_SCAN_TOOL_VERSIONS_URL/<version>.
+CENTRAL_LATEST_BALLERINA_URL="https://api.central.ballerina.io/2.0/update-tool/distributions/latest?version=2201.0.0"
+CENTRAL_SCAN_TOOL_VERSIONS_URL="https://api.central.ballerina.io/2.0/registry/packages/ballerina/tool_scan"
+
+# Options of every curl call: HTTPS only, with retries, and limits that fail a connection or a
+# transfer that stalls instead of hanging the job. Downloads can be large, so there is no overall limit.
+CURL_OPTS=(-fsSL --proto '=https' --retry 3 --connect-timeout 10 --speed-limit 1 --speed-time 60)
+
+# Prints the version cached as $1, or else runs the rest of the arguments and caches what it prints,
+# once per job. Fails when that is not a version. An empty $1 caches nothing. A failure is cached in
+# the work directory, so a Central outage pays the retries once per run and a later run asks again.
+cached_version() {
+  local cache="" failed="" version
+  [ -z "$1" ] || cache="$(tool_cache_dir)/$1"
+  [ -z "$1" ] || [ -z "${SCAN_WORK_DIR:-}" ] || failed="$SCAN_WORK_DIR/$1.failed"
+  shift
+  [ -z "$failed" ] || [ ! -e "$failed" ] || return 1
+  if [ -s "$cache" ]; then
+    cat "$cache"
+    return
+  fi
+  if version="$("$@")" && [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+    [ -z "$cache" ] || printf '%s' "$version" > "$cache"
+    printf '%s' "$version"
+  else
+    [ -z "$failed" ] || : > "$failed"
+    return 1
+  fi
+}
+
+# Like cached_version, for an answer that changes with new releases. Outside Actions the cache
+# outlives the run, so it is not cached there.
+cached_latest_version() {
+  cached_version "${RUNNER_TEMP:+$1}" "${@:2}"
+}
+
+# A Central API call is small, so it also has an overall timeout.
+central_get() {
+  curl "${CURL_OPTS[@]}" --max-time 30 "$@"
+}
+
+# Prints the latest scan tool compatible with Ballerina $1. Central picks it from the Ballerina
+# version in the User-Agent, as it does for 'bal tool pull scan'.
+latest_compatible_tool_version() {
+  cached_latest_version "scan-tool-for-ballerina-$1" fetch_compatible_tool_version "$1"
+}
+fetch_compatible_tool_version() {
+  central_get -H "User-Agent: $1" -H "Ballerina-Platform: $CENTRAL_PLATFORM" "$CENTRAL_TOOLS_URL/scan" \
+    | jq -r '.version // empty'
+}
+
+# Sets PICKED_TOOL to the latest scan tool compatible with Ballerina $1, failing when Central cannot
+# say. Dies when that scan tool is older than the oldest supported one.
+pick_compatible_tool() {
+  PICKED_TOOL="$(latest_compatible_tool_version "$1")" || return 1
+  echo "The latest bal scan compatible with Ballerina $1 is $PICKED_TOOL."
+  version_ge "$PICKED_TOOL" "$MIN_TOOL_VERSION" \
+    || die "The latest bal scan compatible with Ballerina $1 is $PICKED_TOOL, but the oldest supported version is $MIN_TOOL_VERSION. Set tool-version to $MIN_TOOL_VERSION or a later version that supports Ballerina $1."
+}
+
+# Prints the latest scan tool release, whatever Ballerina it needs. Pre-releases are left out.
+latest_tool_version() {
+  cached_latest_version latest-scan-tool fetch_latest_tool_version
+}
+fetch_latest_tool_version() {
+  central_get "$CENTRAL_SCAN_TOOL_VERSIONS_URL" | jq -r '.[]' \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1n -k2,2n -k3,3n | tail -n1
+}
+
+tool_min_ballerina() {
+  cached_version "ballerina-for-scan-tool-$1" fetch_tool_min_ballerina "$1"
+}
+fetch_tool_min_ballerina() {
+  central_get "$CENTRAL_SCAN_TOOL_VERSIONS_URL/$1" \
+    | jq -r '.ballerinaVersion // empty | capture("^(?<update>[0-9]+\\.[0-9]+)\\.").update + ".0"'
+}
+
+# Prints the oldest Ballerina of the known scan tool line that version $1 belongs to.
+known_tool_min_ballerina() {
+  local row needed="$MIN_BALLERINA_VERSION" rows
+  # Read up front: version_ge's here-strings break a here-string loop in a command substitution.
+  mapfile -t rows <<< "$SCAN_TOOL_BALLERINA"
+  for row in "${rows[@]}"; do
+    if [ -n "$row" ] && version_ge "$1" "${row% *}"; then
+      needed="${row#* }"
+    fi
+  done
+  printf '%s' "$needed"
+}
+
+# Prints the latest Ballerina release.
+latest_ballerina_version() {
+  cached_latest_version latest-ballerina fetch_latest_ballerina_version
+}
+fetch_latest_ballerina_version() {
+  central_get "$CENTRAL_LATEST_BALLERINA_URL" | jq -r '.major // empty'
+}
 
 # The SonarQube platform plugin, published to GitHub Packages, which needs a token with
 # read:packages. Older versions do not work with the supported scan tools.
@@ -25,7 +134,7 @@ SONAR_PLUGIN_URL="https://maven.pkg.github.com/ballerina-platform/sonar-ballerin
 # Known plugin versions, newest first: version, oldest scan tool it works with, first scan tool it
 # is not known to work with, and the SHA-256 a download must match.
 SONAR_PLUGINS="\
-0.3.0 0.12.0 0.13.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
+0.3.0 0.11.0 0.13.0 b1e962ecc2e5337d92f7a8043089f40e1f284f2133328835d6c4987322ea98a5
 "
 
 # Prints the SHA-256 of platform plugin version $1, failing when this release does not know it.
@@ -213,22 +322,37 @@ has_bal() {
 }
 
 # Prints the version of the bal on the path, such as 2201.13.5, or nothing when it cannot be read.
+# A bal that fails, such as one without Java, prints nothing instead of failing the caller.
 bal_version() {
-  bal_cmd version 2> /dev/null | tr -d '\r' | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p' | head -n1
+  { bal_cmd version 2> /dev/null || true; } | tr -d '\r' | sed -n 's/^Ballerina \([0-9][^ ]*\).*/\1/p' | head -n1
 }
 
-# Succeeds when the bal on the path can be used for ballerina-version $1: latest, a version, or a
-# prefix of one, such as 2201.13.
-bal_matches() {
-  local current
-  has_bal || return 1
-  current="$(bal_version)"
-  [ -n "$current" ] || return 1
-  if [ "$1" = latest ]; then
-    version_ge "$current" "$MIN_BALLERINA_VERSION"
-  else
-    [ "$current" = "$1" ] || [[ "$current" == "$1".* ]]
+# Fails when units.json ($3) has a workspace and Ballerina $1 or bal scan $2 cannot scan it. A
+# version that is empty or not yet resolved, such as latest, is not checked.
+check_workspace_support() {
+  local bal="$1" tool="$2" units="$3" unsupported="" workspaces ws
+  if [[ "$bal" =~ ^[0-9] ]] && ! version_ge "$bal" "$MIN_WORKSPACE_BALLERINA_VERSION"; then
+    unsupported="Ballerina $bal"
+  elif [[ "$tool" =~ ^[0-9] ]] && ! version_ge "$tool" "$MIN_WORKSPACE_TOOL_VERSION"; then
+    unsupported="bal scan $tool"
   fi
+  [ -n "$unsupported" ] || return 0
+  workspaces="$(jq -r '.[] | select(.kind == "workspace") | .path' "$units")"
+  [ -n "$workspaces" ] || return 0
+  while IFS= read -r ws; do log_error "'$ws' is a workspace, which $unsupported does not support."; done <<< "$workspaces"
+  die "This run uses $unsupported, which does not support workspaces. Workspaces need Ballerina $MIN_WORKSPACE_BALLERINA_VERSION or later and bal scan $MIN_WORKSPACE_TOOL_VERSION or later: set ballerina-version to $MIN_WORKSPACE_BALLERINA_VERSION or later, and leave tool-version empty or set it to $MIN_WORKSPACE_TOOL_VERSION or later. Or leave the workspaces out with exclude-paths."
+}
+
+# Prints the active scan tool version, or nothing when none is installed. Before Ballerina 2201.13,
+# 'bal tool list' marks the active version with "*"; later ones list only that version.
+active_tool_version() {
+  bal_cmd tool list 2> /dev/null | tr -d '\r' \
+    | awk -F'|' '$2 ~ /^[[:space:]]*scan[[:space:]]*$/ && match($3, /[0-9]+\.[0-9]+\.[0-9]+[^[:space:]]*/) {
+        v = substr($3, RSTART, RLENGTH)
+        if ($3 ~ /\*/) active = v
+        else if (first == "") first = v
+      }
+      END { print (active != "" ? active : first) }'
 }
 
 # Removes the Ballerina distributions installed from .deb packages. Each version is its own package
@@ -430,7 +554,7 @@ download() {
   local url="$1" out="$2" tmp
   shift 2
   tmp="$(mktemp "$out.XXXXXX")"
-  if curl -fsSL --proto '=https' --retry 3 "$@" -o "$tmp" "$url"; then
+  if curl "${CURL_OPTS[@]}" "$@" -o "$tmp" "$url"; then
     mv "$tmp" "$out"
   else
     rm -f "$tmp"

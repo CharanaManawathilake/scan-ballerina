@@ -19,8 +19,8 @@
 # fails the step. A failed SonarQube pass only fails SonarQube: the SARIF file is still produced,
 # and report.sh fails the step at the end.
 #
-# Inputs (environment): SCAN_WORK_DIR, SONARQUBE, PLATFORM_CONFIG, SCANNER_BIN, INCLUDE_RULES,
-# EXCLUDE_RULES, CATEGORY.
+# Inputs (environment): SCAN_WORK_DIR, SONARQUBE, SCAN_BALLERINA_VERSION and SCAN_TOOL_VERSION
+# (the installed Ballerina and scan tool), PLATFORM_CONFIG, SCANNER_BIN, INCLUDE_RULES, EXCLUDE_RULES, CATEGORY.
 # Writes: $SCAN_WORK_DIR/reports/<index>.sarif per unit, in the order of units.json,
 # $SCAN_WORK_DIR/sonarqube-uploads.json and $SCAN_WORK_DIR/sonarqube-failures.txt, one line per
 # package whose SonarQube pass failed.
@@ -33,6 +33,9 @@ source "$SCRIPT_DIR/lib.sh"
 WORK="${SCAN_WORK_DIR:?SCAN_WORK_DIR is not set}"
 ROOT="$(workspace_root)"
 cd "$ROOT"
+
+# Catches workspaces resolve-versions.sh could not check, such as with an unresolved latest.
+check_workspace_support "${SCAN_BALLERINA_VERSION:-}" "${SCAN_TOOL_VERSION:-}" "$WORK/units.json"
 
 RULE_ARGS=()
 INCLUDE="$(split_list "${INCLUDE_RULES:-}" | paste -sd, -)"
