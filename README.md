@@ -213,7 +213,7 @@ The platform plugin is published to GitHub Packages, which needs a token with `r
 
 The action passes the settings to SonarScanner through the `SONAR_HOST_URL`, `SONAR_TOKEN` and `SONAR_SCANNER_JSON_PARAMS` environment variables of each package's `bal scan` process, never on the command line. SonarScanner gives them precedence over the properties file, and keeps the file's other settings.
 
-Pull requests from forks in `pull_request` runs, and runs triggered by Dependabot on any event other than `pull_request_target` and `workflow_run`, get no secrets and a read-only `GITHUB_TOKEN`. In such a run, the action skips SonarQube with a warning when a token is empty, skips the upload to code scanning with a warning, and still produces the SARIF file. Save it with `artifacts: true` and upload it from a trusted `workflow_run` workflow.
+Pull requests from forks in `pull_request` runs, and runs triggered by Dependabot on any event other than `pull_request_target` and `workflow_run`, get no secrets and a read-only `GITHUB_TOKEN`. In such a run, the action skips SonarQube with a warning when a token is empty, and still produces the SARIF file. Code scanning accepts uploads from `pull_request` runs even with a read-only token, so the action still uploads there. On other events, such as a Dependabot `push`, it skips the upload to code scanning with a warning. Save the SARIF file with `artifacts: true` and upload it from a trusted `workflow_run` workflow.
 
 SonarQube receives each package's findings before the `exclude-tests` and `exclude-paths` filters are applied. Use `sonar.exclusions` and `sonar.test.inclusions` to keep the same files out of SonarQube.
 

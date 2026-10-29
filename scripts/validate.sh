@@ -197,8 +197,9 @@ GCS=false
 GCS_SKIPPED=false
 if selected github-code-scanning; then
   GCS=true
-  if [ "$RESTRICTED" = true ]; then
-    log_warning "Skipping the upload to GitHub code scanning: pull requests from forks and Dependabot runs get a read-only GITHUB_TOKEN. The SARIF file is kept as the sarif-file output; save it with artifacts: true and upload it from a trusted workflow_run workflow."
+  # Code scanning accepts uploads from pull_request runs even with a read-only GITHUB_TOKEN.
+  if [ "$RESTRICTED" = true ] && [ "${GITHUB_EVENT_NAME:-}" != pull_request ]; then
+    log_warning "Skipping the upload to GitHub code scanning: Dependabot runs on events other than pull_request get a read-only GITHUB_TOKEN. The SARIF file is kept as the sarif-file output; save it with artifacts: true and upload it from a trusted workflow_run workflow."
     GCS=false
     GCS_SKIPPED=true
   fi
