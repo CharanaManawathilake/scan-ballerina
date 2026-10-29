@@ -5,8 +5,8 @@
 # Inputs (environment): PLATFORMS, SCAN_PATHS, EXCLUDE_PATHS, EXCLUDE_TESTS, CATEGORY,
 # INCLUDE_RULES, EXCLUDE_RULES, FAIL_ON_SEVERITY, MAX_FINDINGS, ANNOTATIONS, JOB_SUMMARY,
 # ARTIFACTS, PLATFORM_CONFIG, BALLERINA_VERSION, TOOL_VERSION, MATRIX (the matrix as JSON).
-# Outputs: work-dir, github-code-scanning, github-code-scanning-skipped, sonarqube,
-# sonarqube-skipped, artifacts (true or false), artifact-name.
+# Outputs: work-dir, github-code-scanning, restricted, sonarqube, sonarqube-skipped, artifacts
+# (true or false), artifact-name.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
@@ -177,15 +177,16 @@ if jq -e 'has("github-code-scanning") and (.["github-code-scanning"] // {} | len
   error "platform-config.github-code-scanning takes no settings. It uses the github-token and category inputs."
 fi
 
-# Runs triggered by Dependabot, on any event, and pull requests from forks get no secrets and a
-# read-only GITHUB_TOKEN. pull_request_target and workflow_run run in the base repository.
+# Runs triggered by Dependabot, on any event, and runs for pull requests from forks, such as
+# pull_request and pull_request_review, get no secrets and a read-only GITHUB_TOKEN.
+# pull_request_target and workflow_run run in the base repository.
 RESTRICTED=false
 case "${GITHUB_EVENT_NAME:-}" in
   pull_request_target | workflow_run) ;;
   *)
     if [ "${GITHUB_ACTOR:-}" = "dependabot[bot]" ]; then
       RESTRICTED=true
-    elif [ "${GITHUB_EVENT_NAME:-}" = pull_request ] && [ -f "${GITHUB_EVENT_PATH:-}" ] && jq -e \
+    elif [ -f "${GITHUB_EVENT_PATH:-}" ] && jq -e \
       '.pull_request.head.repo.full_name != null and .pull_request.head.repo.full_name != .repository.full_name' \
       "$GITHUB_EVENT_PATH" > /dev/null 2>&1; then
       RESTRICTED=true
@@ -194,16 +195,7 @@ case "${GITHUB_EVENT_NAME:-}" in
 esac
 
 GCS=false
-GCS_SKIPPED=false
-if selected github-code-scanning; then
-  GCS=true
-  # Code scanning accepts uploads from pull_request runs even with a read-only GITHUB_TOKEN.
-  if [ "$RESTRICTED" = true ] && [ "${GITHUB_EVENT_NAME:-}" != pull_request ]; then
-    log_warning "Skipping the upload to GitHub code scanning: Dependabot runs on events other than pull_request get a read-only GITHUB_TOKEN. The SARIF file is kept as the sarif-file output; save it with artifacts: true and upload it from a trusted workflow_run workflow."
-    GCS=false
-    GCS_SKIPPED=true
-  fi
-fi
+selected github-code-scanning && GCS=true
 
 SONARQUBE=false
 if selected sonarqube; then
@@ -260,7 +252,7 @@ mkdir -p "$WORK/reports" "$WORK/logs"
 
 set_output work-dir "$WORK"
 set_output github-code-scanning "$GCS"
-set_output github-code-scanning-skipped "$GCS_SKIPPED"
+set_output restricted "$RESTRICTED"
 set_output sonarqube "$SONARQUBE"
 set_output sonarqube-skipped "$(selected sonarqube && [ "$SONARQUBE" = false ] && echo true || echo false)"
 set_output artifacts "$ARTIFACTS"

@@ -129,19 +129,21 @@ jobs:
               || fail "$name: validate.sh failed: $(cat "$work/stdout.txt")"
             for expected in "$@"; do
               grep -qxF "$expected" "$work/output.txt" \
-                || fail "$name: expected $expected, got $(grep -E '^(github-code-scanning|sonarqube)' "$work/output.txt" | paste -sd ' ')"
+                || fail "$name: expected $expected, got $(grep -E '^(github-code-scanning|restricted|sonarqube)' "$work/output.txt" | paste -sd ' ')"
             done
             echo "$name: ok"
           }
 
-          # Code scanning accepts uploads from pull_request runs even with a read-only token.
-          UPLOAD=(github-code-scanning=true github-code-scanning-skipped=false)
-          check fork-pr pull_request contributor contributor/repo github-code-scanning '' "${UPLOAD[@]}"
-          check same-repo-pr pull_request owner owner/repo github-code-scanning '' "${UPLOAD[@]}"
-          check dependabot-pr pull_request 'dependabot[bot]' owner/repo github-code-scanning '' "${UPLOAD[@]}"
-          check fork-pr-target pull_request_target contributor contributor/repo github-code-scanning '' "${UPLOAD[@]}"
-          check dependabot-push push 'dependabot[bot]' '' github-code-scanning '' \
-            github-code-scanning=false github-code-scanning-skipped=true
+          # Every run tries the upload. Restricted runs let it fail, and report it as skipped.
+          RESTRICTED=(github-code-scanning=true restricted=true)
+          TRUSTED=(github-code-scanning=true restricted=false)
+          check fork-pr pull_request contributor contributor/repo github-code-scanning '' "${RESTRICTED[@]}"
+          check fork-pr-review pull_request_review contributor contributor/repo github-code-scanning '' "${RESTRICTED[@]}"
+          check fork-pr-review-comment pull_request_review_comment contributor contributor/repo github-code-scanning '' "${RESTRICTED[@]}"
+          check dependabot-pr pull_request 'dependabot[bot]' owner/repo github-code-scanning '' "${RESTRICTED[@]}"
+          check dependabot-push push 'dependabot[bot]' '' github-code-scanning '' "${RESTRICTED[@]}"
+          check same-repo-pr pull_request owner owner/repo github-code-scanning '' "${TRUSTED[@]}"
+          check fork-pr-target pull_request_target contributor contributor/repo github-code-scanning '' "${TRUSTED[@]}"
 
           # Pull requests from forks still get no secrets, so an empty SonarQube token skips it.
           SONAR_EMPTY_TOKEN=$'sonarqube:\n  host-url: https://sonar.example.com\n  token: ""'
