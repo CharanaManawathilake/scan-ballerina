@@ -97,3 +97,53 @@ jobs:
           [ -z "$(platform_form_problem test/toml/mixed.toml mixed)" ]
           platform_form_problem test/toml/inline-array.toml inline | grep -q 'such as an array of inline tables'
           platform_form_problem test/toml/multiline-string.toml multiline | grep -q 'without breaking the file'
+
+  # validate.sh tells restricted runs, those with a read-only GITHUB_TOKEN and no secrets, from the
+  # event, the actor and the event file. Each case fakes them as GitHub sets them for that run.
+  restricted-runs:
+    name: Restricted runs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the uploads kept for each kind of run
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          # Usage: check NAME EVENT ACTOR HEAD-REPO PLATFORMS PLATFORM-CONFIG OUTPUT...
+          # An empty HEAD-REPO leaves pull_request out of the event file, as on a push.
+          check() {
+            local name="$1" event="$2" actor="$3" head="$4" platforms="$5" config="$6"
+            shift 6
+            local work="$RUNNER_TEMP/restricted-runs/$name" expected
+            mkdir -p "$work"
+            jq -n --arg head "$head" '{repository: {full_name: "owner/repo"}}
+              + if $head == "" then {} else {pull_request: {head: {repo: {full_name: $head}}}} end' \
+              > "$work/event.json"
+            : > "$work/output.txt"
+            # The commands go to a file, so that the warnings do not annotate this job.
+            GITHUB_EVENT_NAME="$event" GITHUB_ACTOR="$actor" GITHUB_EVENT_PATH="$work/event.json" \
+              GITHUB_OUTPUT="$work/output.txt" PLATFORMS="$platforms" PLATFORM_CONFIG="$config" \
+              CATEGORY="$name" bash scripts/validate.sh > "$work/stdout.txt" \
+              || fail "$name: validate.sh failed: $(cat "$work/stdout.txt")"
+            for expected in "$@"; do
+              grep -qxF "$expected" "$work/output.txt" \
+                || fail "$name: expected $expected, got $(grep -E '^(github-code-scanning|sonarqube)' "$work/output.txt" | paste -sd ' ')"
+            done
+            echo "$name: ok"
+          }
+
+          # Code scanning accepts uploads from pull_request runs even with a read-only token.
+          UPLOAD=(github-code-scanning=true github-code-scanning-skipped=false)
+          check fork-pr pull_request contributor contributor/repo github-code-scanning '' "${UPLOAD[@]}"
+          check same-repo-pr pull_request owner owner/repo github-code-scanning '' "${UPLOAD[@]}"
+          check dependabot-pr pull_request 'dependabot[bot]' owner/repo github-code-scanning '' "${UPLOAD[@]}"
+          check fork-pr-target pull_request_target contributor contributor/repo github-code-scanning '' "${UPLOAD[@]}"
+          check dependabot-push push 'dependabot[bot]' '' github-code-scanning '' \
+            github-code-scanning=false github-code-scanning-skipped=true
+
+          # Pull requests from forks still get no secrets, so an empty SonarQube token skips it.
+          SONAR_EMPTY_TOKEN=$'sonarqube:\n  host-url: https://sonar.example.com\n  token: ""'
+          check fork-pr-sonarqube pull_request contributor contributor/repo sonarqube "$SONAR_EMPTY_TOKEN" \
+            sonarqube=false sonarqube-skipped=true
