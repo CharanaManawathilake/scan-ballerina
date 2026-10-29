@@ -176,7 +176,7 @@ if [ "$(trim "${JOB_SUMMARY:-true}")" = "true" ] && [ -n "${GITHUB_STEP_SUMMARY:
       echo
     fi
     if [ "${GCS_SKIPPED:-false}" = "true" ]; then
-      echo "- The upload to GitHub code scanning was skipped: pull requests from forks and Dependabot runs get a read-only \`GITHUB_TOKEN\`. The SARIF file is kept as the \`sarif-file\` output, and \`artifacts: true\` saves it as an artifact."
+      echo "- The upload to GitHub code scanning was skipped: Dependabot runs on events other than \`pull_request\` get a read-only \`GITHUB_TOKEN\`. The SARIF file is kept as the \`sarif-file\` output, and \`artifacts: true\` saves it as an artifact."
     fi
     if [ "${SONARQUBE_SKIPPED:-false}" = "true" ]; then
       echo "- SonarQube was skipped: secrets are not available to pull requests from forks or to Dependabot runs."
