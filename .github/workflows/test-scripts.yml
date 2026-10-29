@@ -142,10 +142,39 @@ jobs:
           check fork-pr-review-comment pull_request_review_comment contributor contributor/repo github-code-scanning '' "${RESTRICTED[@]}"
           check dependabot-pr pull_request 'dependabot[bot]' owner/repo github-code-scanning '' "${RESTRICTED[@]}"
           check dependabot-push push 'dependabot[bot]' '' github-code-scanning '' "${RESTRICTED[@]}"
+          check dependabot-schedule schedule 'dependabot[bot]' '' github-code-scanning '' "${RESTRICTED[@]}"
+          check dependabot-dispatch workflow_dispatch 'dependabot[bot]' '' github-code-scanning '' "${RESTRICTED[@]}"
           check same-repo-pr pull_request owner owner/repo github-code-scanning '' "${TRUSTED[@]}"
           check fork-pr-target pull_request_target contributor contributor/repo github-code-scanning '' "${TRUSTED[@]}"
+
+          # validate.sh no longer warns about the upload; report.sh does, only when it was skipped.
+          for name in fork-pr fork-pr-review fork-pr-review-comment dependabot-pr dependabot-push \
+            dependabot-schedule dependabot-dispatch same-repo-pr fork-pr-target; do
+            ! grep -q '^::warning' "$RUNNER_TEMP/restricted-runs/$name/stdout.txt" \
+              || fail "$name: validate.sh warned: $(grep '^::warning' "$RUNNER_TEMP/restricted-runs/$name/stdout.txt")"
+          done
 
           # Pull requests from forks still get no secrets, so an empty SonarQube token skips it.
           SONAR_EMPTY_TOKEN=$'sonarqube:\n  host-url: https://sonar.example.com\n  token: ""'
           check fork-pr-sonarqube pull_request contributor contributor/repo sonarqube "$SONAR_EMPTY_TOKEN" \
             sonarqube=false sonarqube-skipped=true
+
+      - name: Check the warning for a skipped upload to code scanning
+        shell: bash
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+          WORK="$RUNNER_TEMP/gcs-skipped"
+          mkdir -p "$WORK"
+          # The commands go to a file, so that the warning does not annotate this job.
+          for skipped in true false; do
+            GITHUB_OUTPUT=/dev/null GITHUB_STEP_SUMMARY="$WORK/summary-$skipped.md" CATEGORY=gcs-skipped \
+              UNIT_COUNT=1 HIGH=0 MEDIUM=0 LOW=0 TOTAL=0 PACKAGES_SCANNED=1 GCS_SKIPPED="$skipped" \
+              bash scripts/report.sh > "$WORK/stdout-$skipped.txt"
+          done
+          grep -q '^::warning.*upload to GitHub code scanning failed and was skipped' "$WORK/stdout-true.txt" \
+            || fail "No warning when the upload was skipped"
+          grep -q 'upload to GitHub code scanning failed and was skipped' "$WORK/summary-true.md" \
+            || fail "No summary line when the upload was skipped"
+          ! grep -q 'code scanning' "$WORK/stdout-false.txt" || fail "Warned although the upload was not skipped"
+          ! grep -q 'code scanning' "$WORK/summary-false.md" || fail "Summary mentions code scanning although the upload was not skipped"
