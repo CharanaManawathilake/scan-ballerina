@@ -296,7 +296,8 @@ Findings never fail the step unless you set `fail-on-severity`. Problems with th
 | Saving the artifact fails, such as when another scan in the run used the same `category` | Fails, after the findings are uploaded |
 | Findings over the gate | Fails, after the SARIF file is written and uploaded |
 | Fork or Dependabot pull request with an empty SonarQube token | Skips SonarQube with a warning, and still produces the SARIF file |
-| Fork or Dependabot pull request with `github-code-scanning` | Skips the upload with a warning, and keeps the SARIF file as the `sarif-file` output and in the artifact, when `artifacts` is `true` |
+| Fork or Dependabot pull request with `github-code-scanning` | Uploads the SARIF file, since code scanning accepts uploads from `pull_request` runs with a read-only token |
+| Dependabot run on another event, such as `push`, with `github-code-scanning` | Skips the upload with a warning, and keeps the SARIF file as the `sarif-file` output and in the artifact, when `artifacts` is `true` |
 
 ## How it works
 
