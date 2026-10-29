@@ -222,7 +222,7 @@ if selected sonarqube; then
     | .token // "" | tostring | select(. != "")] | length > 0' <<< "$CONFIG")"
 
   if [ "$RESTRICTED" = true ] && { [ "${EMPTY_TOKENS:-0}" -gt 0 ] || [ "$ANY_TOKEN" != true ]; }; then
-    log_warning "Skipping sonarqube: secrets are not available to pull requests from forks or to Dependabot runs, so a SonarQube token is empty. The SARIF file is still produced."
+    log_warning "Skipping sonarqube: pull requests from forks get no secrets and Dependabot runs get only Dependabot secrets, so a SonarQube token is empty. The SARIF file is still produced."
     SONARQUBE=false
   elif [ "${EMPTY_TOKENS:-0}" -gt 0 ]; then
     error "platform-config.sonarqube has an empty token. Pass each token from a secret, such as token: \${{ secrets.SONAR_TOKEN }}, and check that the secret is set."
