@@ -47,7 +47,7 @@ if [ -n "${ARTIFACT_ID:-}" ]; then
 fi
 set_output uploads "$UPLOADS"
 
-GCS_SKIP_REASON="code scanning rejects a token that cannot write security events outside pull_request runs, and also rejects invalid or oversized SARIF files. See the upload step log for the error."
+GCS_SKIP_REASON="code scanning rejects a token that cannot write security events outside pull_request runs. See the upload step log for the error."
 if [ "${GCS_SKIPPED:-false}" = "true" ]; then
   log_warning "The upload to GitHub code scanning failed and was skipped: $GCS_SKIP_REASON The SARIF file is kept as the sarif-file output; save it with artifacts: true and upload it from a trusted workflow_run workflow."
 fi

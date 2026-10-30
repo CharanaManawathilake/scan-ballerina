@@ -134,7 +134,8 @@ jobs:
             echo "$name: ok"
           }
 
-          # Every run tries the upload. Restricted runs let it fail, and report it as skipped.
+          # Every run tries the upload. Restricted runs on events other than pull_request let it fail,
+          # and report it as skipped.
           RESTRICTED=(github-code-scanning=true restricted=true)
           TRUSTED=(github-code-scanning=true restricted=false)
           check fork-pr pull_request contributor contributor/repo github-code-scanning '' "${RESTRICTED[@]}"
