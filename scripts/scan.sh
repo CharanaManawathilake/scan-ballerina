@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Step 6: runs bal scan on each package or workspace found by find-packages.sh.
 #
+# A unit with a package that has no Dependencies.toml is built first, since bal scan 0.11.1 and
+# later scan only packages with locked dependencies. The Dependencies.toml it writes is kept.
 # Each unit gets a SARIF pass, and with SONARQUBE=true a SonarQube pass:
 #   - SARIF pass: bal scan --format=sarif. The scan tool writes no report file while any
 #     [[platform]] entry is active, and every entry in Scan.toml is always active. So when the
@@ -121,6 +123,22 @@ use_scan_toml() {
   fi
 }
 
+# Runs bal build on unit $1 when it or one of its workspace members has no Dependencies.toml,
+# which bal scan 0.11.1 and later need. Keeps the output in log file $2. Returns its exit code.
+lock_dependencies() {
+  local unit="$1" log="$2" path dir
+  path="$(jq -r '.path' <<< "$unit")"
+  while IFS= read -r dir; do
+    [ -f "$dir/Dependencies.toml" ] && continue
+    echo "'$dir' has no Dependencies.toml, so bal build runs first to lock its dependencies."
+    set +e
+    (cd "$path" && bal_cmd build < /dev/null) 2>&1 | tee "$log"
+    local status="${PIPESTATUS[0]}"
+    set -e
+    return "$status"
+  done < <(jq -r 'if .kind == "workspace" then .path as $ws | .members[] | "\($ws)/\(.)" else .path end' <<< "$unit")
+}
+
 # Runs bal scan in a directory and keeps its output in a log file. Returns its exit code.
 run_bal_scan() {
   local dir="$1" log="$2"
@@ -153,11 +171,17 @@ while IFS= read -r unit; do
   done < <(jq -c '."scan-config" // [] | .[]' <<< "$unit")
 
   status=0
-  run_bal_scan "$path" "$WORK/logs/scan-$idx.log" --format=sarif "${RULE_ARGS[@]+"${RULE_ARGS[@]}"}" || status=$?
+  build_status=0
+  lock_dependencies "$unit" "$WORK/logs/build-$idx.log" || build_status=$?
+  if [ "$build_status" -eq 0 ]; then
+    run_bal_scan "$path" "$WORK/logs/scan-$idx.log" --format=sarif "${RULE_ARGS[@]+"${RULE_ARGS[@]}"}" || status=$?
+  fi
   restore_files
 
   # bal scan reports some errors, such as an invalid Scan.toml, without a failing exit code.
-  if [ "$status" -ne 0 ]; then
+  if [ "$build_status" -ne 0 ]; then
+    FAILED+=("$path: bal build, run to lock the dependencies, exited with code $build_status")
+  elif [ "$status" -ne 0 ]; then
     FAILED+=("$path: bal scan exited with code $status")
   elif [ ! -f "$report" ] || ! jq -e '.runs[0]' "$report" > /dev/null 2>&1; then
     FAILED+=("$path: bal scan did not write a SARIF report. See its output above")
